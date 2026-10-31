@@ -1,6 +1,6 @@
 # ShareOS Desktop
 
-Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 26 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
+Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 28 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
 
 ## Starten und prüfen
 
@@ -29,7 +29,7 @@ Anmeldepasswörter und Sitzungstokens der Desktop-App werden nicht auf Platte ge
 
 ## Stand der Prüfung
 
-26 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
+28 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
 
 Noch nicht enthalten: geplante Backups, inkrementelle Speicherung, automatische Aufbewahrung, Windows-/macOS-Installer und Signierung. Für Linux liegt ein lokales Installationsskript bei. Upload und Download verwenden native Dateidialoge. Die Box-Einstellungen verwenden ebenfalls Dateidialoge. Der Dateibackup-Bereich verwendet weiterhin Pfadeingabefelder. Unter Linux benötigen die Dialoge einen laufenden `xdg-desktop-portal`-Dienst mit passendem Desktop-Backend (beispielsweise KDE oder GTK).
 
@@ -103,3 +103,9 @@ Zusätzliche Tests prüfen Speichern der Einstellungen, Benutzerfreigaben, gespe
 Ohne manuelle Subnetzvorgabe werden die IPv4-Adressen und Netzmasken der lokalen Netzwerkschnittstellen ausgelesen. Die Schnittstelle der Standardroute wird zuerst berücksichtigt; weitere LAN-Schnittstellen bleiben etwa bei aktivem VPN enthalten. Loopback, Link-Local sowie erkennbare Docker-/Veth-/Bridge-Schnittstellen werden ausgelassen. Die Ermittlung der Standardroute verwendet eine UDP-Routenauswahl ohne Paketversand.
 
 Bis /22 wird das erkannte Netz durchsucht. Größere Netze werden auf den /24-Adressbereich der jeweiligen eigenen IPv4-Adresse begrenzt, um keine sehr großen Netze vollständig zu scannen. Jeder Suchkandidat wird über HTTP und HTTPS geprüft. Die bekannte Box-Adresse und `shareos.local` bleiben auch bei fehlender IPv4-Erkennung als Suchziele enthalten. Die Suche wird ausschließlich durch den Benutzer in der lokal gestarteten App ausgelöst; Tests prüfen die Adressberechnung ohne Zugriff auf eine NAS.
+
+## Linux-Dateidialoge und Navigation
+
+Die synchronen XDG-Portal-Dateidialoge verwenden das `async-std`/`async-io`-Backend von rfd/ashpd/zbus. Dadurch benötigen die Hintergrundthreads der App keine eigene Tokio-Laufzeit. Ein isolierter Regressionstest ruft Dateiöffnung und Speicherdialog ohne Tokio, ohne erreichbaren D-Bus und ohne grafischen Fallback auf; fehlende Dienste führen dabei zu einem regulären Abbruch statt zum Reactor-Panic.
+
+Vor der Anmeldung ist ausschließlich **Box finden** sichtbar. Nach erfolgreicher Anmeldung werden die weiteren Bereiche eingeblendet. Das Terminal bleibt zusätzlich auf Administratoren beschränkt. Beim Abmelden wird die aktive Ansicht auf Box finden zurückgesetzt.

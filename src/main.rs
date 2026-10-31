@@ -28,6 +28,9 @@ const TABS: [&str; 6] = [
     "Box-Einstellungen",
     "Terminal",
 ];
+fn tab_visible(index: usize, logged_in: bool, admin: bool) -> bool {
+    index == 0 || (logged_in && (index != 5 || admin))
+}
 enum Change {
     Message(String),
     Found(Vec<String>),
@@ -879,7 +882,11 @@ impl App {
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
         }
-        if self.tab == 5 && !self.nas.as_ref().is_some_and(|nas| nas.admin) {
+        if !tab_visible(
+            self.tab,
+            self.nas.is_some(),
+            self.nas.as_ref().is_some_and(|nas| nas.admin),
+        ) {
             self.tab = 0;
         }
         if self.tab == 1
@@ -974,7 +981,11 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     for (i, tab) in TABS.iter().enumerate() {
-                        if i == 5 && !self.nas.as_ref().is_some_and(|nas| nas.admin) {
+                        if !tab_visible(
+                            i,
+                            self.nas.is_some(),
+                            self.nas.as_ref().is_some_and(|nas| nas.admin),
+                        ) {
                             continue;
                         }
                         let active = self.tab == i;
@@ -1083,6 +1094,55 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod ui_tests {
     use super::*;
+    #[test]
+    fn navigation_requires_login_and_terminal_requires_admin() {
+        let visible = |logged_in, admin| {
+            (0..TABS.len())
+                .filter(|index| tab_visible(*index, logged_in, admin))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(visible(false, false), vec![0]);
+        assert_eq!(visible(true, false), vec![0, 1, 2, 3, 4]);
+        assert_eq!(visible(true, true), vec![0, 1, 2, 3, 4, 5]);
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn portal_file_dialogs_run_without_tokio_reactor() {
+        const CHILD: &str = "SHAREOS_DIALOG_REGRESSION_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            // Deliberately unavailable portal and no GUI fallback: exercise the
+            // real synchronous backend, without showing a dialog or a Tokio runtime.
+            assert!(rfd::FileDialog::new().pick_file().is_none());
+            assert!(rfd::FileDialog::new()
+                .set_file_name("settings.json")
+                .save_file()
+                .is_none());
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "ui_tests::portal_file_dialogs_run_without_tokio_reactor",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", temp.path().join("missing-bus").display()),
+            )
+            .env("XDG_RUNTIME_DIR", temp.path())
+            .env("PATH", temp.path())
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "dialog backend panicked: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
     #[test]
     fn root_navigation_is_vertical_and_does_not_overlap() {
         let ctx = egui::Context::default();
