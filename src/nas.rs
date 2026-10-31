@@ -13,6 +13,31 @@ pub struct Nas {
     sid: String,
     pub user: String,
     pub admin: bool,
+    pub shares: Vec<Share>,
+    pub trusted: Option<crate::tls::Certificate>,
+}
+#[derive(Clone, Deserialize, Debug)]
+pub struct Share {
+    pub name: String,
+    pub access: String,
+    #[serde(default)]
+    pub comment: String,
+}
+fn user_shares(me: &Value) -> Vec<Share> {
+    let mut shares: Vec<Share> = serde_json::from_value(me["shares"].clone()).unwrap_or_default();
+    if let Some(name) = me["home"]["smb"].as_str().filter(|name| !name.is_empty()) {
+        if !shares.iter().any(|share| share.name == name) {
+            shares.insert(
+                0,
+                Share {
+                    name: name.into(),
+                    access: "rw".into(),
+                    comment: "Eigene Dateien".into(),
+                },
+            );
+        }
+    }
+    shares
 }
 #[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct Root {
@@ -67,9 +92,17 @@ impl Nas {
             sid: "test".into(),
             user: "test".into(),
             admin,
+            shares: vec![],
+            trusted: None,
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_at(base: url::Url, admin: bool) -> Self {
+        let mut nas = Self::test_session(admin);
+        nas.base = base;
+        nas
+    }
     pub fn connect(
         address: &str,
         user: String,
@@ -91,6 +124,8 @@ impl Nas {
             sid: ZERO.into(),
             user,
             admin: false,
+            shares: vec![],
+            trusted: trusted.cloned(),
         };
         let result = nas.rpc(
             "session",
@@ -107,7 +142,10 @@ impl Nas {
             json!({"username":nas.user,"password":password}),
         );
         match bound {
-            Ok(me) => nas.admin = me["role"].as_str() == Some("admin"),
+            Ok(me) => {
+                nas.admin = me["role"].as_str() == Some("admin");
+                nas.shares = user_shares(&me);
+            }
             Err(error) => {
                 let _ = nas.logout();
                 return Err(error.context("Benutzerzuordnung fehlgeschlagen"));
@@ -245,6 +283,24 @@ impl Nas {
         )?;
         Ok(())
     }
+    pub fn refresh_shares(&self) -> Result<Vec<Share>> {
+        Ok(user_shares(&self.rpc("shareos.me", "get", json!({}))?))
+    }
+    pub fn terminal_token(&self, url: &Url) -> Result<String> {
+        ensure!(
+            url.host_str() == self.base.host_str() && url.scheme() == self.base.scheme(),
+            "Ungültige Terminal-Adresse"
+        );
+        let value: Value = self
+            .http
+            .get(url.join("token")?)
+            .send()
+            .map_err(reqwest::Error::without_url)?
+            .error_for_status()
+            .map_err(reqwest::Error::without_url)?
+            .json()?;
+        Ok(value["token"].as_str().unwrap_or("").into())
+    }
     pub fn terminal(&self, dark: bool) -> Result<Url> {
         ensure!(self.admin, "Administratorrechte erforderlich");
         let p = crate::theme::palette(dark);
@@ -316,7 +372,17 @@ pub fn private_file(path: &Path) -> Result<File> {
 // Public identification only: discovery never sends credentials or trusts a
 // discovered certificate for subsequent login.
 pub fn discover(prefix: &str, configured: &str) -> Result<Vec<String>> {
-    let addresses = discovery_addresses(prefix, configured)?;
+    let mut addresses = discovery_addresses(prefix, configured)?;
+    if prefix.trim().is_empty() {
+        for host in local_search_hosts()? {
+            for scheme in ["https", "http"] {
+                let address = format!("{scheme}://{host}/");
+                if !addresses.contains(&address) {
+                    addresses.push(address);
+                }
+            }
+        }
+    }
     let http = Http::builder()
         .timeout(Duration::from_secs(2))
         .connect_timeout(Duration::from_secs(1))
@@ -348,6 +414,64 @@ pub fn discover(prefix: &str, configured: &str) -> Result<Vec<String>> {
         });
     }
     Ok(found)
+}
+fn network_hosts(ip: std::net::Ipv4Addr, mask: std::net::Ipv4Addr) -> Vec<std::net::Ipv4Addr> {
+    let ip = u32::from(ip);
+    let mut mask = u32::from(mask);
+    // Avoid scanning tens of thousands of hosts on corporate /16 networks.
+    if mask.count_ones() < 22 {
+        mask = 0xffff_ff00;
+    }
+    let network = ip & mask;
+    let broadcast = network | !mask;
+    if broadcast.saturating_sub(network) <= 1 {
+        return vec![];
+    }
+    ((network + 1)..broadcast)
+        .filter(|host| *host != ip)
+        .map(std::net::Ipv4Addr::from)
+        .collect()
+}
+fn local_search_hosts() -> Result<Vec<std::net::Ipv4Addr>> {
+    use std::net::{IpAddr, UdpSocket};
+    // UDP connect selects a local route without sending a packet.
+    let preferred = UdpSocket::bind("0.0.0.0:0").ok().and_then(|socket| {
+        socket.connect("192.0.2.1:9").ok()?;
+        Some(socket.local_addr().ok()?.ip())
+    });
+    let interfaces =
+        if_addrs::get_if_addrs().context("Lokale Netzwerkadressen konnten nicht erkannt werden")?;
+    let mut networks = vec![];
+    for interface in interfaces {
+        let if_addrs::IfAddr::V4(address) = interface.addr else {
+            continue;
+        };
+        if address.ip.is_loopback() || address.ip.is_unspecified() || address.ip.is_link_local() {
+            continue;
+        }
+        let is_default = preferred == Some(IpAddr::V4(address.ip));
+        if !is_default
+            && (interface.name.starts_with("docker")
+                || interface.name.starts_with("veth")
+                || interface.name.starts_with("br-"))
+        {
+            continue;
+        }
+        networks.push((is_default, address.ip, address.netmask));
+    }
+    // Prefer the default-route interface; fall back to detected LAN interfaces.
+    if networks.iter().any(|network| network.0) {
+        networks.retain(|network| network.0);
+    }
+    let mut hosts = vec![];
+    for (_, ip, mask) in networks {
+        for host in network_hosts(ip, mask) {
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
+    }
+    Ok(hosts)
 }
 fn discovery_addresses(prefix: &str, configured: &str) -> Result<Vec<String>> {
     let mut addresses = Vec::new();
@@ -392,6 +516,18 @@ pub(crate) fn probe(http: &Http, address: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_discovery_uses_local_subnet_and_bounds_large_networks() {
+        use std::net::Ipv4Addr;
+        let ip = Ipv4Addr::new(10, 242, 1, 20);
+        let hosts = network_hosts(ip, Ipv4Addr::new(255, 255, 255, 0));
+        assert!(hosts.contains(&Ipv4Addr::new(10, 242, 1, 32)));
+        assert!(!hosts.contains(&ip));
+        assert_eq!(hosts.len(), 253);
+        let large = network_hosts(ip, Ipv4Addr::new(255, 255, 0, 0));
+        assert_eq!(large.len(), 253);
+        assert!(!large.contains(&Ipv4Addr::new(10, 242, 2, 1)));
+    }
     #[test]
     fn discovery_checks_https_subnets_and_configured_dns_name() {
         let addresses = discovery_addresses("10.242.1", "https://shareos.skynet.lan").unwrap();
@@ -536,6 +672,26 @@ mod integration_tests {
         assert_eq!(url.host_str(), Some("box.local"));
     }
     #[test]
+    fn shares_come_from_user_rights_and_include_personal_smb_folder() {
+        let shares = user_shares(
+            &json!({"home":{"smb":"alice"},"shares":[{"name":"Team","access":"ro","comment":"Lesen"}]}),
+        );
+        assert_eq!(shares.len(), 2);
+        assert_eq!(shares[0].name, "alice");
+        assert_eq!(shares[1].access, "ro");
+    }
+    #[test]
+    fn settings_backup_is_written_and_existing_files_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("settings.json");
+        let content = r#"{"shareos_backup":1,"host":"box","encrypted":false}"#;
+        save_settings_file(content, &target).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), content);
+        assert!(save_settings_file(content, &target).is_err());
+        assert!(save_settings_file("{}", &dir.path().join("invalid.json")).is_err());
+        assert!(!dir.path().join("invalid.json").exists());
+    }
+    #[test]
     fn binding_failure_does_not_grant_admin_access() {
         let (address, server) = mock(vec![
             reply(json!({"ubus_rpc_session":"abc"})),
@@ -623,6 +779,8 @@ mod transfer_tests {
             sid: "test".into(),
             user: "alice".into(),
             admin: false,
+            shares: vec![],
+            trusted: None,
         };
         (nas, handle)
     }
@@ -666,4 +824,26 @@ mod transfer_tests {
         assert!(!target.exists());
         server.join().unwrap();
     }
+}
+
+pub fn save_settings_file(content: &str, target: &Path) -> Result<()> {
+    use std::io::Write;
+    let value: Value =
+        serde_json::from_str(content).context("Ungültige Sicherungsdaten von der Box")?;
+    ensure!(
+        value["shareos_backup"] == 1,
+        "Keine ShareOS-Einstellungssicherung erhalten"
+    );
+    let mut file = private_file(target)
+        .context("Sicherungsdatei konnte nicht angelegt werden. Einen neuen Dateinamen wählen.")?;
+    let result = (|| -> Result<()> {
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(target);
+    }
+    result
 }

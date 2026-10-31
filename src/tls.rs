@@ -11,7 +11,7 @@ use rustls::{
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Certificate {
     pub origin: String,
     pub der: Vec<u8>,
@@ -63,14 +63,34 @@ pub fn configure(
         address.scheme() == "https" && cert.origin == address.origin().ascii_serialization(),
         "Zertifikatsvertrauen gilt nur für die bestätigte Box-Adresse"
     );
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedCertificate(cert.der.clone())))
-        .with_no_client_auth();
-    Ok(builder.use_preconfigured_tls(config))
+    Ok(builder.use_preconfigured_tls(client_config(address, Some(cert))?))
 }
+pub fn client_config(
+    address: &url::Url,
+    trusted: Option<&Certificate>,
+) -> Result<rustls::ClientConfig> {
+    let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?;
+    if let Some(cert) = trusted {
+        ensure!(
+            address.scheme() == "https" && cert.origin == address.origin().ascii_serialization(),
+            "Zertifikat gehört zu einer anderen Box-Adresse"
+        );
+        Ok(builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PinnedCertificate(cert.der.clone())))
+            .with_no_client_auth())
+    } else {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls_native_certs::load_native_certs().certs {
+            let _ = roots.add(cert);
+        }
+        Ok(builder.with_root_certificates(roots).with_no_client_auth())
+    }
+}
+
 #[derive(Debug)]
 struct PinnedCertificate(Vec<u8>);
 impl ServerCertVerifier for PinnedCertificate {
