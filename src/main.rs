@@ -2,6 +2,8 @@
 mod backup;
 mod drives;
 mod nas;
+mod theme;
+mod tls;
 use anyhow::Result;
 use eframe::egui;
 use nas::{Entry, Nas, Root};
@@ -22,6 +24,7 @@ const TABS: [&str; 5] = [
 enum Change {
     Message(String),
     Found(Vec<String>),
+    Certificate(tls::Certificate),
     Login(Nas, Vec<Root>),
     List(Vec<Entry>, bool),
     Snapshot(backup::Snapshot),
@@ -34,6 +37,8 @@ struct App {
     subnet: String,
     user: String,
     password: String,
+    certificate: Option<tls::Certificate>,
+    trusted_certificate: Option<tls::Certificate>,
     nas: Option<Nas>,
     roots: Vec<Root>,
     selected: Vec<bool>,
@@ -55,26 +60,32 @@ struct App {
     confirm: bool,
     status: String,
     job: Option<Receiver<Result<Change>>>,
-    logo: egui::TextureHandle,
+    logo_light: egui::TextureHandle,
+    logo_dark: egui::TextureHandle,
+    dark: bool,
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        let image = image::load_from_memory(include_bytes!("../assets/logo-light.png"))
-            .unwrap()
-            .to_rgba8();
-        let size = [image.width() as usize, image.height() as usize];
-        let logo = cc.egui_ctx.load_texture(
-            "shareos-logo",
-            egui::ColorImage::from_rgba_unmultiplied(size, &image),
-            Default::default(),
-        );
+        theme::apply(&cc.egui_ctx, true);
+        let load_logo = |name, bytes: &[u8]| {
+            let image = image::load_from_memory(bytes).unwrap().to_rgba8();
+            let size = [image.width() as usize, image.height() as usize];
+            cc.egui_ctx.load_texture(
+                name,
+                egui::ColorImage::from_rgba_unmultiplied(size, &image),
+                Default::default(),
+            )
+        };
+        let logo_light = load_logo("logo-light", include_bytes!("../assets/logo-light.png"));
+        let logo_dark = load_logo("logo-dark", include_bytes!("../assets/logo-dark.png"));
         Self {
             tab: 0,
             address: "http://192.168.0.32".into(),
             subnet: "192.168.0".into(),
             user: String::new(),
             password: String::new(),
+            certificate: None,
+            trusted_certificate: None,
             nas: None,
             roots: vec![],
             selected: vec![],
@@ -96,7 +107,9 @@ impl App {
             confirm: false,
             status: "Box suchen oder Adresse eingeben und anmelden.".into(),
             job: None,
-            logo,
+            logo_light,
+            logo_dark,
+            dark: true,
         }
     }
     fn start(
@@ -138,8 +151,16 @@ impl App {
                         match change {
                             Change::Message(message) => self.status = message,
                             Change::Found(found) => {
-                                self.status = format!("{} Box(en) gefunden.", found.len());
+                                self.status = if found.is_empty() {
+                                    "Keine Box gefunden. Subnetz und Box-Adresse prüfen; auch die eingegebene Adresse wird durchsucht.".into()
+                                } else {
+                                    format!("{} Adresse(n) gefunden. HTTPS-Zertifikat vor der Anmeldung prüfen.", found.len())
+                                };
                                 self.found = found;
+                            }
+                            Change::Certificate(certificate) => {
+                                self.certificate = Some(certificate);
+                                self.status = "Zertifikat geladen. Fingerabdruck vor dem Vertrauen mit der Box vergleichen.".into();
                             }
                             Change::Login(nas, roots) => {
                                 self.selected = vec![!nas.admin; roots.len()];
@@ -169,6 +190,8 @@ impl App {
                             }
                             Change::Logout => {
                                 self.nas = None;
+                                self.trusted_certificate = None;
+                                self.certificate = None;
                                 self.roots.clear();
                                 self.entries.clear();
                                 self.selected.clear();
@@ -190,7 +213,10 @@ impl App {
         field(ui, "Subnetz (optional)", &mut self.subnet);
         if ui.button("Boxen suchen").clicked() {
             let subnet = self.subnet.clone();
-            self.start(ctx, move || Ok(Change::Found(nas::discover(&subnet)?)));
+            let configured = self.address.clone();
+            self.start(ctx, move || {
+                Ok(Change::Found(nas::discover(&subnet, &configured)?))
+            });
         }
         for address in &self.found {
             if ui
@@ -202,7 +228,57 @@ impl App {
         }
         ui.separator();
         field(ui, "Box-Adresse", &mut self.address);
-        ui.small("HTTPS mit vertrauenswürdigem Zertifikat verwenden. Bei HTTP werden Zugangsdaten unverschlüsselt übertragen.");
+        ui.small("HTTPS verwenden. Bei HTTP werden Zugangsdaten unverschlüsselt übertragen.");
+        let origin = nas::base_url(&self.address)
+            .ok()
+            .map(|url| url.origin().ascii_serialization());
+        if self
+            .trusted_certificate
+            .as_ref()
+            .is_some_and(|cert| Some(&cert.origin) != origin.as_ref())
+        {
+            self.trusted_certificate = None;
+        }
+        if self
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| Some(&cert.origin) != origin.as_ref())
+        {
+            self.certificate = None;
+        }
+        if self.nas.is_none()
+            && (self.address.trim().starts_with("https://") || !self.address.contains("://"))
+        {
+            if ui.button("HTTPS-Zertifikat prüfen").clicked() {
+                let address = self.address.clone();
+                self.trusted_certificate = None;
+                self.certificate = None;
+                self.start(ctx, move || {
+                    Ok(Change::Certificate(tls::inspect(&address)?))
+                });
+            }
+            if let Some(cert) = &self.certificate {
+                ui.label(format!("Zertifikat für {}", cert.origin));
+                ui.label("SHA-256-Fingerabdruck:");
+                ui.add(
+                    egui::Label::new(egui::RichText::new(cert.fingerprint()).monospace()).wrap(),
+                );
+                ui.small("Mit dem Zertifikat im Browser oder auf der Box vergleichen. Vertrauen gilt nur für diese Adresse und Sitzung, auch bei abweichendem Zertifikatsnamen oder Gültigkeitszeitraum.");
+                if self.trusted_certificate.is_none()
+                    && ui
+                        .button("Diesem Zertifikat für diese Sitzung vertrauen")
+                        .clicked()
+                {
+                    self.trusted_certificate = Some(cert.clone());
+                }
+            }
+            if self.trusted_certificate.is_some() {
+                ui.label("Das bestätigte Zertifikat wird für diese Sitzung exakt geprüft.");
+                if ui.button("Zertifikatsvertrauen zurücksetzen").clicked() {
+                    self.trusted_certificate = None;
+                }
+            }
+        }
         field(ui, "Benutzername", &mut self.user);
         ui.horizontal(|ui| {
             ui.label("Passwort");
@@ -212,8 +288,9 @@ impl App {
             let address = self.address.clone();
             let user = self.user.clone();
             let password = std::mem::take(&mut self.password);
+            let trusted = self.trusted_certificate.clone();
             self.start(ctx, move || {
-                let nas = Nas::connect(&address, user, &password)?;
+                let nas = Nas::connect(&address, user, &password, trusted.as_ref())?;
                 let roots = match nas.roots() {
                     Ok(roots) => roots,
                     Err(error) => {
@@ -510,70 +587,161 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.poll();
-        egui::SidePanel::left("navigation")
-            .exact_width(205.0)
+        let p = theme::palette(self.dark);
+        egui::TopBottomPanel::top("header")
+            .frame(
+                egui::Frame::new()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::same(24)),
+            )
             .show(ctx, |ui| {
-                ui.add_space(20.0);
-                ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(172.0, 70.0)));
-                ui.heading("Desktop");
-                ui.label("Lokaler Entwurf · 0.1.0");
-                ui.add_space(24.0);
-                for (i, tab) in TABS.iter().enumerate() {
-                    ui.selectable_value(&mut self.tab, i, *tab);
-                    ui.add_space(8.0);
-                }
-                if let Some(nas) = self.nas.clone() {
-                    ui.separator();
-                    ui.label(&nas.user);
-                    ui.small(nas.base.as_str());
-                    ui.small(if nas.admin {
-                        "Administrator"
+                ui.set_max_width(1240.0);
+                ui.horizontal(|ui| {
+                    let logo = if self.dark {
+                        &self.logo_dark
                     } else {
-                        "Benutzer"
+                        &self.logo_light
+                    };
+                    ui.add(egui::Image::new(logo).max_height(72.0).max_width(210.0));
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("DESKTOP")
+                                .size(22.0)
+                                .strong()
+                                .color(p.accent),
+                        );
+                        ui.label(
+                            egui::RichText::new(concat!("Version ", env!("CARGO_PKG_VERSION")))
+                                .size(13.0)
+                                .color(p.muted),
+                        );
                     });
-                    if ui
-                        .add_enabled(self.job.is_none(), egui::Button::new("Abmelden"))
-                        .clicked()
-                    {
-                        self.nas = None;
-                        self.roots.clear();
-                        self.entries.clear();
-                        self.preview = None;
-                        self.password.clear();
-                        self.settings_password.clear();
-                        self.start(ctx, move || {
-                            let _ = nas.logout();
-                            Ok(Change::Logout)
-                        });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let next = if self.dark { "Hell" } else { "Dunkel" };
+                        if ui
+                            .button(next)
+                            .on_hover_text("Hell/Dunkel umschalten")
+                            .clicked()
+                        {
+                            self.dark = !self.dark;
+                            theme::apply(ctx, self.dark);
+                        }
+                    });
+                });
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (i, tab) in TABS.iter().enumerate() {
+                        let active = self.tab == i;
+                        let text = egui::RichText::new(tab.to_uppercase())
+                            .size(12.0)
+                            .strong()
+                            .color(if active { p.bg } else { p.muted });
+                        let button = egui::Button::new(text)
+                            .min_size(egui::vec2(0.0, 44.0))
+                            .fill(if active { p.accent } else { p.panel })
+                            .stroke(egui::Stroke::new(
+                                1.0_f32,
+                                if active { p.accent } else { p.line },
+                            ));
+                        if ui.add(button).clicked() {
+                            self.tab = i;
+                        }
                     }
+                });
+                if let Some(nas) = self.nas.clone() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · {} · {}",
+                                nas.user,
+                                nas.base,
+                                if nas.admin {
+                                    "Administrator"
+                                } else {
+                                    "Benutzer"
+                                }
+                            ))
+                            .color(p.muted),
+                        );
+                        if ui
+                            .add_enabled(self.job.is_none(), egui::Button::new("Abmelden"))
+                            .clicked()
+                        {
+                            self.nas = None;
+                            self.trusted_certificate = None;
+                            self.certificate = None;
+                            self.roots.clear();
+                            self.entries.clear();
+                            self.preview = None;
+                            self.password.clear();
+                            self.settings_password.clear();
+                            self.start(ctx, move || {
+                                let _ = nas.logout();
+                                Ok(Change::Logout)
+                            });
+                        }
+                    });
                 }
             });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if self.job.is_some() {
-                    ui.spinner();
-                }
-                ui.label(&self.status);
-            });
-        });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(TABS[self.tab]);
-            ui.add_space(20.0);
-            let busy = self.job.is_some();
-            ui.add_enabled_ui(!busy, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
-                    0 => self.discovery(ui, ctx),
-                    1 => self.files(ui, ctx),
-                    2 => self.network(ui, ctx),
-                    3 => self.backups(ui, ctx),
-                    _ => self.settings(ui, ctx),
+        egui::TopBottomPanel::bottom("status")
+            .frame(
+                egui::Frame::new()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::symmetric(24, 12)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if self.job.is_some() {
+                        ui.spinner();
+                    }
+                    let color = if self.status.starts_with("Fehler:") {
+                        p.error
+                    } else {
+                        p.muted
+                    };
+                    ui.label(egui::RichText::new(&self.status).size(12.0).color(color));
                 });
             });
-        });
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::symmetric(24, 12)),
+            )
+            .show(ctx, |ui| {
+                ui.set_max_width(1240.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::Frame::new()
+                        .fill(p.panel)
+                        .stroke(egui::Stroke::new(1.0_f32, p.line))
+                        .corner_radius(12)
+                        .inner_margin(18)
+                        .show(ui, |ui| {
+                            ui.set_min_width((ui.available_width() - 36.0).max(0.0));
+                            ui.label(
+                                egui::RichText::new(TABS[self.tab].to_uppercase())
+                                    .size(15.0)
+                                    .strong()
+                                    .color(p.accent),
+                            );
+                            ui.add_space(8.0);
+                            let busy = self.job.is_some();
+                            ui.add_enabled_ui(!busy, |ui| match self.tab {
+                                0 => self.discovery(ui, ctx),
+                                1 => self.files(ui, ctx),
+                                2 => self.network(ui, ctx),
+                                3 => self.backups(ui, ctx),
+                                _ => self.settings(ui, ctx),
+                            });
+                        });
+                });
+            });
     }
 }
 fn main() -> eframe::Result {
-    let image = image::load_from_memory(include_bytes!("../assets/logo-dark.png"))
+    let image = image::load_from_memory(include_bytes!("../assets/icon-512.png"))
         .unwrap()
         .to_rgba8();
     let icon = egui::IconData {
@@ -585,6 +753,7 @@ fn main() -> eframe::Result {
         "ShareOS Desktop",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
+                .with_app_id("de.shareos.desktop")
                 .with_inner_size([1060.0, 740.0])
                 .with_icon(icon),
             ..Default::default()

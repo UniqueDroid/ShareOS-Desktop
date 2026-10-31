@@ -9,11 +9,13 @@ description = "ShareOS Desktop für Windows, Linux und macOS"
 anyhow = "1"
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 url = "2"
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 tempfile = "3"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ShareOS Desktop
+Comment=Dateien, Netzlaufwerke und Backups für deine ShareOS-Box
+Exec=shareos-desktop
+Icon=de.shareos.desktop
+Terminal=false
+Categories=Network;FileTransfer;
+StartupWMClass=de.shareos.desktop

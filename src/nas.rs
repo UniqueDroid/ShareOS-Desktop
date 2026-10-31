@@ -57,14 +57,24 @@ pub fn base_url(input: &str) -> Result<Url> {
     Ok(url)
 }
 impl Nas {
-    pub fn connect(address: &str, user: String, password: &str) -> Result<Self> {
+    pub fn connect(
+        address: &str,
+        user: String,
+        password: &str,
+        trusted: Option<&crate::tls::Certificate>,
+    ) -> Result<Self> {
+        let base = base_url(address)?;
         let mut nas = Self {
-            base: base_url(address)?,
-            http: Http::builder()
-                .timeout(Duration::from_secs(600))
-                .connect_timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            base: base.clone(),
+            http: crate::tls::configure(
+                Http::builder()
+                    .timeout(Duration::from_secs(600))
+                    .connect_timeout(Duration::from_secs(5))
+                    .redirect(reqwest::redirect::Policy::none()),
+                &base,
+                trusted,
+            )?
+            .build()?,
             sid: ZERO.into(),
             user,
             admin: false,
@@ -73,7 +83,7 @@ impl Nas {
             "session",
             "login",
             json!({"username":nas.user,"password":password,"timeout":3600}),
-        )?;
+        ).context("Anmeldung fehlgeschlagen. Bei UnknownIssuer oder Zertifikatsfehler: Zertifikat prüfen, Fingerabdruck mit der Box vergleichen und ausdrücklich vertrauen.")?;
         nas.sid = result["ubus_rpc_session"]
             .as_str()
             .context("Keine Sitzung erhalten")?
@@ -213,40 +223,28 @@ pub fn private_file(path: &Path) -> Result<File> {
     }
     Ok(options.open(path)?)
 }
-pub fn discover(prefix: &str) -> Result<Vec<String>> {
-    let mut addresses = vec![
-        "https://shareos.local/".to_owned(),
-        "http://192.168.0.32/".to_owned(),
-    ];
-    if !prefix.trim().is_empty() {
-        let parts: Vec<_> = prefix.trim().split('.').collect();
-        ensure!(
-            parts.len() == 3 && parts.iter().all(|x| x.parse::<u8>().is_ok()),
-            "Subnetz als 192.168.0 eingeben"
-        );
-        addresses.extend((1..255).map(|i| format!("http://{}.{i}/", prefix.trim())));
-    }
+// Public identification only: discovery never sends credentials or trusts a
+// discovered certificate for subsequent login.
+pub fn discover(prefix: &str, configured: &str) -> Result<Vec<String>> {
+    let addresses = discovery_addresses(prefix, configured)?;
     let http = Http::builder()
         .timeout(Duration::from_secs(2))
+        .connect_timeout(Duration::from_secs(1))
+        .danger_accept_invalid_certs(true)
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let mut found = Vec::new();
-    for batch in addresses.chunks(16) {
+    for batch in addresses.chunks(32) {
         std::thread::scope(|scope| {
             let jobs: Vec<_> = batch
                 .iter()
                 .map(|address| {
                     let http = &http;
                     scope.spawn(move || {
-                        let body = http
-                            .get(format!("{address}app.js"))
-                            .send()
-                            .ok()?
-                            .error_for_status()
-                            .ok()?
-                            .text()
-                            .ok()?;
-                        body.contains("shareos.files").then(|| address.clone())
+                        probe(http, address)
+                            .ok()
+                            .filter(|found| *found)
+                            .map(|_| address.clone())
                     })
                 })
                 .collect();
@@ -261,9 +259,62 @@ pub fn discover(prefix: &str) -> Result<Vec<String>> {
     }
     Ok(found)
 }
+fn discovery_addresses(prefix: &str, configured: &str) -> Result<Vec<String>> {
+    let mut addresses = Vec::new();
+    if let Ok(base) = base_url(configured) {
+        addresses.push(base.to_string());
+    }
+    for host in ["shareos.local", "192.168.0.32"] {
+        for scheme in ["https", "http"] {
+            addresses.push(format!("{scheme}://{host}/"));
+        }
+    }
+    if !prefix.trim().is_empty() {
+        let parts: Vec<_> = prefix.trim().split('.').collect();
+        ensure!(
+            parts.len() == 3 && parts.iter().all(|x| x.parse::<u8>().is_ok()),
+            "Subnetz als 192.168.0 eingeben"
+        );
+        for i in 1..255 {
+            for scheme in ["https", "http"] {
+                addresses.push(format!("{scheme}://{}.{i}/", prefix.trim()));
+            }
+        }
+    }
+    let mut unique = std::collections::HashSet::new();
+    addresses.retain(|address| unique.insert(address.clone()));
+    Ok(addresses)
+}
+pub(crate) fn probe(http: &Http, address: &str) -> Result<bool> {
+    use std::io::Read;
+    let response = http
+        .get(base_url(address)?.join("app.js")?)
+        .send()?
+        .error_for_status()?;
+    // Redirects and generic login pages are not evidence of ShareOS.
+    if !response.status().is_success() {
+        return Ok(false);
+    }
+    let mut body = String::new();
+    response.take(2 * 1024 * 1024).read_to_string(&mut body)?;
+    Ok(body.contains("shareos.files") && body.contains("shareos.me"))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_checks_https_subnets_and_configured_dns_name() {
+        let addresses = discovery_addresses("10.242.1", "https://shareos.skynet.lan").unwrap();
+        for expected in [
+            "https://shareos.skynet.lan/",
+            "https://10.242.1.32/",
+            "http://10.242.1.32/",
+            "https://192.168.0.32/",
+        ] {
+            assert!(addresses.iter().any(|address| address == expected));
+        }
+        assert!(discovery_addresses("10.242.999", "").is_err());
+    }
     #[test]
     fn rejects_unsafe_addresses() {
         for url in [
@@ -344,7 +395,7 @@ mod integration_tests {
                 json!({"roots":[{"name":"alice","home":true,"ro":false},{"name":"Team","ro":true}]}),
             ),
         ]);
-        let nas = Nas::connect(&address, "alice".into(), "test-password").unwrap();
+        let nas = Nas::connect(&address, "alice".into(), "test-password", None).unwrap();
         assert!(!nas.admin);
         assert!(nas.settings("").is_err());
         let roots = nas.roots().unwrap();
@@ -362,7 +413,7 @@ mod integration_tests {
             reply(json!({"error":"session not bound"})),
             reply(json!({})),
         ]);
-        assert!(Nas::connect(&address, "alice".into(), "test-password").is_err());
+        assert!(Nas::connect(&address, "alice".into(), "test-password", None).is_err());
         let calls = server.join().unwrap();
         assert_eq!(calls[2]["params"][2], "destroy");
     }
@@ -373,7 +424,7 @@ mod integration_tests {
             reply(json!({"role":"user"})),
             reply(json!({"entries":[],"truncated":true})),
         ]);
-        let nas = Nas::connect(&address, "alice".into(), "test-password").unwrap();
+        let nas = Nas::connect(&address, "alice".into(), "test-password", None).unwrap();
         let dir = tempfile::tempdir().unwrap();
         assert!(crate::backup::create(
             &nas,
