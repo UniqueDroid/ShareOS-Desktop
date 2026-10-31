@@ -1,6 +1,6 @@
 # ShareOS Desktop
 
-Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und zwölf automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
+Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und achtzehn automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
 
 ## Starten und prüfen
 
@@ -12,12 +12,12 @@ cargo test --locked
 cargo build --release --locked
 ```
 
-Die Binärdatei liegt unter `target/release/shareos-desktop` (Windows: `.exe`). Auf jedem Zielsystem nativ bauen. Windows benötigt die MSVC-Buildtools, macOS die Xcode Command Line Tools, Linux einen C-Linker und X11/Wayland/OpenGL-Laufzeitbibliotheken. Linux-SMB benötigt GIO/GVfs mit SMB-Unterstützung. Windows- und macOS-Builds wurden in dieser Linux-Umgebung noch nicht geprüft; es gibt noch keine Installer oder Signierung.
+Die Binärdatei liegt unter `target/release/shareos-desktop` (Windows: `.exe`). Auf jedem Zielsystem nativ bauen. Windows benötigt die MSVC-Buildtools, macOS die Xcode Command Line Tools, Linux einen C-Linker und X11/Wayland/OpenGL-Laufzeitbibliotheken. Linux-SMB benötigt GIO/GVfs mit SMB-Unterstützung. Windows- und macOS-Builds wurden in dieser Linux-Umgebung noch nicht geprüft; für Windows und macOS gibt es noch keine Installer oder Signierung.
 
 ## Die fünf Bereiche
 
 - **Box finden:** `shareos.local`, `192.168.0.32`, die eingegebene Adresse und optional das angegebene IPv4-/24-Subnetz prüfen. Manuelle Box-Adresse mit HTTP oder HTTPS und optional Port möglich. Die Suche identifiziert die bestehende ShareOS-Webanwendung; sie ist keine mDNS-Dienstsuche. HTTPS verwendet standardmäßig den Zertifikatsspeicher des Betriebssystems. Die Suche prüft HTTP und HTTPS, auch bei selbstsignierten Box-Zertifikaten; dabei werden keine Anmeldedaten gesendet. Zusätzlich wird die eingegebene Box-Adresse geprüft. Ein Suchtreffer bedeutet noch kein Zertifikatsvertrauen. Bei HTTP werden auch Anmeldedaten unverschlüsselt übertragen.
-- **Dateien:** `session.login`, anschließend verpflichtend `shareos.me.bind`. Ohne erfolgreiche Benutzerzuordnung kein Zugriff und keine angenommene Administratorrolle. Ordner und Leserechte kommen aus `shareos.files.roots`; Listen über `shareos.files.list`. Downloads und Uploads verwenden kurzlebige Einmaltickets von `shareos.files.ticket` und `/cgi-bin/files`. Übertragungen laufen im Hintergrund. Bestehende lokale oder entfernte Dateien werden nicht absichtlich überschrieben. Nach Uploads auf Aktualisieren klicken. Sitzung nach einer Stunde gegebenenfalls erneut anmelden.
+- **Dateien:** `session.login`, anschließend verpflichtend `shareos.me.bind`. Ohne erfolgreiche Benutzerzuordnung kein Zugriff und keine angenommene Administratorrolle. Ordner und Leserechte kommen aus `shareos.files.roots`; Listen über `shareos.files.list`. Downloads und Uploads verwenden kurzlebige Einmaltickets von `shareos.files.ticket` und `/cgi-bin/files`. Übertragungen laufen im Hintergrund. Bestehende lokale oder entfernte Dateien werden nicht absichtlich überschrieben. Nach der Anmeldung werden die Dateien automatisch geladen; auch nach Uploads und neuen Ordnern wird die Ansicht aktualisiert. Sitzung nach einer Stunde gegebenenfalls erneut anmelden.
 - **Netzlaufwerke:** Windows `net.exe use S: \\box\freigabe /persistent:no`, macOS `open smb://…`, Linux `gio mount smb://…`. Die Betriebssystem-Anmeldung ist unabhängig von der Desktop-Websitzung. Unter Windows vorher passende Zugangsdaten in der Anmeldeinformationsverwaltung speichern. Freigabename manuell eingeben; der persönliche SMB-Freigabename entspricht dem Benutzernamen. SMB-Verbindung und Berechtigungen müssen auf dem jeweiligen Zielsystem getestet werden.
 - **Dateibackup:** Ausgewählte eigene Ordner und freigegebene Ordner rekursiv lokal sichern, einschließlich versteckter Dateien. Die NAS prüft bei jedem Aufruf die Benutzerrechte. Nur vollständige Durchläufe werden als `snapshot-…` sichtbar; Fehler verwerfen den unvollständigen Sicherungsstand. Bei abgeschnittenen NAS-Verzeichnislisten (mehr als 2000 Einträge) wird abgebrochen. Links und Spezialdateien werden ausgelassen und gezählt. Dateien werden nacheinander gelesen; Änderungen während des Backups sind möglich, es ist kein atomarer NAS-Snapshot. Unterverzeichnisse werden über ihre Dateien gesichert; leere Ordner, POSIX-Rechte und ACLs werden noch nicht wiederhergestellt. Sicherungsdaten bleiben unverschlüsselt auf dem lokalen Datenträger; verschlüsselten Datenträger verwenden, falls erforderlich.
 - **Wiederherstellung im Dateibackup:** Sicherungsstand öffnen, lokalen Zielordner angeben und einzelne Datei wiederherstellen. SHA-256 und Dateigröße werden geprüft; bestehende Dateien werden abgewiesen. Dateien landen mit ihrem ursprünglichen Namen im gewählten Zielordner. Für gleichnamige Dateien aus verschiedenen NAS-Ordnern unterschiedliche Zielordner verwenden. Rückübertragung zur Box erfolgt anschließend über Dateien mit aktuellen Schreibrechten.
@@ -29,9 +29,9 @@ Keine Passwörter oder Sitzungstokens werden absichtlich auf Platte gespeichert.
 
 ## Stand der Prüfung
 
-Zwölf automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
+Achtzehn automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
 
-Noch nicht enthalten: geplante Backups, inkrementelle Speicherung, automatische Aufbewahrung, grafische Dateiauswahldialoge, Windows-/macOS-Installer und Signierung. Für Linux liegt ein lokales Installationsskript bei. Pfade werden in dieser ersten Version vollständig in die Eingabefelder eingetragen.
+Noch nicht enthalten: geplante Backups, inkrementelle Speicherung, automatische Aufbewahrung, Windows-/macOS-Installer und Signierung. Für Linux liegt ein lokales Installationsskript bei. Upload und Download verwenden native Dateidialoge. Die Backup- und Einstellungsbereiche verwenden weiterhin Pfadeingabefelder. Unter Linux benötigen die Dialoge einen laufenden `xdg-desktop-portal`-Dienst mit passendem Desktop-Backend (beispielsweise KDE oder GTK).
 
 ## Verbindliche Grundlagen
 
@@ -67,3 +67,21 @@ sh scripts/install-linux.sh
 Das Skript benötigt Cargo, Python 3 und die üblichen Build-Abhängigkeiten. Es baut die Release-Version und installiert sie ohne sudo nach `~/.local/bin`; Desktop-Eintrag und Original-ShareOS-Icon liegen unter `${XDG_DATA_HOME:-~/.local/share}`. Anschließend die laufende App schließen und **ShareOS Desktop** aus dem Anwendungsmenü starten. Desktop-ID und Wayland-App-ID lauten `de.shareos.desktop`. Das quadratische Original-Icon stammt wie die Logos aus dem ShareOS-Repository. Beim bloßen `cargo run` ohne installierten Desktop-Eintrag kann Wayland weiterhin ein generisches Symbol zeigen.
 
 Zusätzliche lokale Regressionstests verwenden einen echten TLS-Testserver mit selbstsigniertem Zertifikat: HTTPS-Suche, gesperrte Anmeldung ohne Vertrauen, erfolgreiche Anmeldung mit bestätigtem Zertifikat, Ablehnung eines abweichenden Zertifikats und Ursprungstrennung. Es erfolgt dabei kein Zugriff auf eine reale NAS.
+
+## Dateibrowser
+
+- Seitenleiste mit eigenen Dateien und freigegebenen Ordnern, einschließlich Nur-Lesen-Kennzeichnung.
+- Klickbare Pfadnavigation, eine Ebene nach oben und Aktualisieren mit F5.
+- Suche im aktuellen Ordner, versteckte Dateien ein-/ausblenden, Sortierung nach Name, Größe oder Änderung. Ordner stehen immer oben.
+- Dateiliste mit gezeichneten Ordner-/Dateisymbolen, Dateityp, KiB/MiB/GiB-Größen, relativen Änderungshinweisen und Eintragszahl.
+- **Hochladen …** öffnet die native Dateiauswahl, **Speichern …** den Speicherdialog. Bestehende Dateien werden weiterhin abgewiesen, auch wenn der Speicherdialog ein Überschreiben anbietet.
+- Uploads und Downloads zeigen die verarbeiteten Bytes; die Erfolgsmeldung erscheint erst nach der NAS-Antwort beziehungsweise dem vollständigen lokalen Schreiben. Beim Upload bedeutet 100 % zunächst, dass der HTTP-Client alle Bytes gelesen hat; die Serverbestätigung folgt anschließend.
+- **Neuer Ordner** ist bei Schreibrechten verfügbar. Nach Upload und Ordneranlage aktualisiert sich die Liste automatisch.
+
+## Admin-Terminal
+
+Nur bei bestätigter Administratorrolle erscheint **Terminal** als zusätzlicher Bereich. **Terminal im Browser öffnen** ruft die vorhandene Methode `shareos.system.terminal` auf und öffnet das ttyd-Terminal der Box im Standardbrowser. Der Terminal-Host bleibt derselbe wie bei der angemeldeten Box; Port und zufälliger Sitzungspfad werden aus der NAS-Antwort validiert. Es wird kein zusätzliches Firmware-Modul installiert und keine SSH-Anmeldung gespeichert.
+
+Die interaktive Shell läuft als root. Sie endet laut ShareOS-Implementierung beim Schließen des Browser-Terminals; ein erneuter Start ersetzt eine vorhandene Sitzung. Die Desktop-App kann ein externes Browser-Tab nicht schließen, daher beendet das Abmelden in der App ein bereits geöffnetes Browser-Terminal nicht automatisch. Bei HTTPS muss der Browser dem Zertifikat für den separaten Terminal-Port ebenfalls vertrauen. Die Farben folgen dem beim Start ausgewählten Hell-/Dunkel-Modus.
+
+Der Bereich enthält kopierbare Diagnosebefehle, die erst nach manuellem Einfügen im Terminal ausgeführt werden. Eine direkt in das native App-Fenster eingebettete Terminal-Ansicht ist noch nicht enthalten.

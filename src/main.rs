@@ -1,9 +1,11 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod backup;
+mod browser;
 mod drives;
 mod nas;
 mod theme;
 mod tls;
+mod transfer;
 use anyhow::Result;
 use eframe::egui;
 use nas::{Entry, Nas, Root};
@@ -11,15 +13,19 @@ use serde_json::Value;
 use std::{
     io::Write,
     path::PathBuf,
-    sync::mpsc::{self, Receiver},
+    sync::{
+        mpsc::{self, Receiver},
+        Arc,
+    },
 };
 
-const TABS: [&str; 5] = [
+const TABS: [&str; 6] = [
     "Box finden",
     "Dateien",
     "Netzlaufwerke",
     "Dateibackup",
     "Box-Einstellungen",
+    "Terminal",
 ];
 enum Change {
     Message(String),
@@ -30,6 +36,7 @@ enum Change {
     Snapshot(backup::Snapshot),
     Preview(Value, String, String),
     Logout,
+    Reload(String),
 }
 struct App {
     tab: usize,
@@ -47,7 +54,12 @@ struct App {
     entries: Vec<Entry>,
     found: Vec<String>,
     local: String,
-    upload: String,
+    file_filter: String,
+    show_hidden: bool,
+    file_sort: browser::Sort,
+    descending: bool,
+    new_folder: String,
+    transfer: Option<Arc<transfer::Progress>>,
     backup_dir: String,
     snapshot_dir: String,
     snapshot: Option<backup::Snapshot>,
@@ -65,12 +77,12 @@ struct App {
     dark: bool,
 }
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::apply(&cc.egui_ctx, true);
+    fn new(ctx: &egui::Context) -> Self {
+        theme::apply(ctx, true);
         let load_logo = |name, bytes: &[u8]| {
             let image = image::load_from_memory(bytes).unwrap().to_rgba8();
             let size = [image.width() as usize, image.height() as usize];
-            cc.egui_ctx.load_texture(
+            ctx.load_texture(
                 name,
                 egui::ColorImage::from_rgba_unmultiplied(size, &image),
                 Default::default(),
@@ -94,7 +106,12 @@ impl App {
             entries: vec![],
             found: vec![],
             local: String::new(),
-            upload: String::new(),
+            file_filter: String::new(),
+            show_hidden: false,
+            file_sort: browser::Sort::default(),
+            descending: false,
+            new_folder: String::new(),
+            transfer: None,
             backup_dir: String::new(),
             snapshot_dir: String::new(),
             snapshot: None,
@@ -119,6 +136,7 @@ impl App {
     ) {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
+        self.transfer = None;
         self.job = Some(rx);
         self.status = "Wird ausgeführt …".into();
         std::thread::spawn(move || {
@@ -137,19 +155,24 @@ impl App {
             });
         }
     }
-    fn poll(&mut self) {
+    fn poll(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.job else {
             return;
         };
         match rx.try_recv() {
             Ok(result) => {
                 self.job = None;
+                self.transfer = None;
                 match result {
                     Err(error) => self.status = format!("Fehler: {error:#}"),
                     Ok(change) => {
                         self.status = "Fertig.".into();
                         match change {
                             Change::Message(message) => self.status = message,
+                            Change::Reload(message) => {
+                                self.refresh(ctx);
+                                self.status = message;
+                            }
                             Change::Found(found) => {
                                 self.status = if found.is_empty() {
                                     "Keine Box gefunden. Subnetz und Box-Adresse prüfen; auch die eingegebene Adresse wird durchsucht.".into()
@@ -170,8 +193,12 @@ impl App {
                                 self.roots = roots;
                                 self.path.clear();
                                 self.entries.clear();
-                                self.status =
-                                    "Angemeldet. Unter Dateien auf Aktualisieren klicken.".into();
+                                self.file_filter.clear();
+                                self.tab = 1;
+                                if !self.root.is_empty() {
+                                    self.refresh(ctx);
+                                }
+                                self.status = "Angemeldet. Dateien werden geladen.".into();
                             }
                             Change::List(entries, truncated) => {
                                 self.entries = entries;
@@ -306,107 +333,225 @@ impl App {
         }
     }
     fn files(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.nas.is_none() {
-            ui.label("Bitte zuerst anmelden.");
+        let Some(nas) = self.nas.clone() else {
+            ui.label("Melde dich an, um deine Dateien und freigegebenen Ordner zu sehen.");
+            return;
+        };
+        if self.roots.is_empty() {
+            ui.label("Für dieses Konto sind keine Ordner verfügbar.");
             return;
         }
-        let old = self.root.clone();
-        egui::ComboBox::from_label("Ordner")
-            .selected_text(&self.root)
-            .show_ui(ui, |ui| {
+        let p = theme::palette(self.dark);
+        let writable = self
+            .roots
+            .iter()
+            .any(|root| root.name == self.root && !root.ro);
+        let mut navigate = None;
+        let mut download = None;
+        let mut upload = false;
+        let mut mkdir = false;
+        ui.horizontal_top(|ui| {
+            egui::Frame::new().fill(p.bg).corner_radius(10).inner_margin(12).show(ui, |ui| {
+                ui.set_width(175.0);
+                ui.label(egui::RichText::new("MEINE BOX").small().strong().color(p.muted));
+                ui.add_space(4.0);
                 for root in &self.roots {
-                    ui.selectable_value(
-                        &mut self.root,
-                        root.name.clone(),
-                        format!("{}{}", root.name, if root.ro { " · nur lesen" } else { "" }),
-                    );
+                    let title = if root.home { "Eigene Dateien" } else { &root.name };
+                    let selected = self.root == root.name;
+                    let response = ui.add_sized([175.0,40.0], egui::Button::new(egui::RichText::new(title).color(if selected {p.bg} else {p.text}))
+                        .fill(if selected {p.accent} else {p.bg}));
+                    if response.on_hover_text(if root.ro {"Nur lesen"} else {"Lesen und schreiben"}).clicked() {
+                        navigate = Some((root.name.clone(),String::new()));
+                    }
+                    if root.ro { ui.label(egui::RichText::new("nur lesen").small().color(p.muted)); }
                 }
             });
-        if old != self.root {
-            self.path.clear();
-            self.entries.clear();
-        }
-        ui.horizontal(|ui| {
-            ui.label(format!("/{}", self.path));
-            if ui.button("Nach oben").clicked() {
-                self.path = self
-                    .path
-                    .rsplit_once('/')
-                    .map(|(p, _)| p.to_owned())
-                    .unwrap_or_default();
-                self.refresh(ctx);
-            }
-            if ui.button("Aktualisieren").clicked() && self.job.is_none() {
-                self.refresh(ctx);
-            }
-        });
-        field(ui, "Lokaler Zielordner", &mut self.local);
-        let mut enter = None;
-        let mut download = None;
-        egui::ScrollArea::vertical()
-            .max_height(300.0)
-            .show(ui, |ui| {
-                for entry in &self.entries {
-                    ui.horizontal(|ui| {
-                        if entry.kind == "dir" {
-                            if ui.button(format!("Ordner: {}", entry.name)).clicked() {
-                                enter = Some(entry.name.clone());
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(&self.root).on_hover_text("Zum Anfang dieses Ordners").clicked() {
+                        navigate = Some((self.root.clone(),String::new()));
+                    }
+                    let parts: Vec<_> = self.path.split('/').filter(|part| !part.is_empty()).collect();
+                    for (i,part) in parts.iter().enumerate() {
+                        ui.label(egui::RichText::new("/").color(p.muted));
+                        if ui.link(*part).clicked() { navigate=Some((self.root.clone(),parts[..=i].join("/"))); }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(!self.path.is_empty(),egui::Button::new("Nach oben")).clicked() {
+                        navigate=Some((self.root.clone(),self.path.rsplit_once('/').map(|(parent,_)|parent.to_string()).unwrap_or_default()));
+                    }
+                    if ui.button("Aktualisieren").on_hover_text("F5").clicked() { navigate=Some((self.root.clone(),self.path.clone())); }
+                    upload=ui.add_enabled(writable,egui::Button::new("Hochladen …")).clicked();
+                    ui.label(egui::RichText::new(if writable {"Lesen & Schreiben"} else {"Nur lesen"}).small().color(p.muted));
+                });
+                ui.add(egui::TextEdit::singleline(&mut self.file_filter).hint_text("In diesem Ordner suchen …").desired_width(f32::INFINITY));
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut self.show_hidden,"Versteckte Dateien");
+                    egui::ComboBox::from_id_salt("file-sort").selected_text(match self.file_sort {browser::Sort::Name=>"Name",browser::Sort::Size=>"Größe",browser::Sort::Modified=>"Geändert"}).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.file_sort,browser::Sort::Name,"Name");
+                        ui.selectable_value(&mut self.file_sort,browser::Sort::Size,"Größe");
+                        ui.selectable_value(&mut self.file_sort,browser::Sort::Modified,"Geändert");
+                    });
+                    ui.checkbox(&mut self.descending,"Absteigend");
+                });
+                let rows = browser::visible(&self.entries,&self.file_filter,self.show_hidden,self.file_sort,self.descending);
+                let total_bytes:u64=rows.iter().filter(|e|e.kind=="file").fold(0u64,|total,entry|total.saturating_add(entry.size));
+                ui.label(egui::RichText::new(format!("{} Einträge · {}",rows.len(),browser::size(total_bytes))).small().color(p.muted));
+                ui.separator();
+                if rows.is_empty() {
+                    ui.add_space(24.0);
+                    ui.label(egui::RichText::new(if self.file_filter.is_empty() {"Dieser Ordner ist leer."} else {"Keine passenden Dateien gefunden."}).color(p.muted));
+                    ui.add_space(24.0);
+                } else {
+                    egui::ScrollArea::both().id_salt("file-list").max_height(420.0).min_scrolled_height(120.0).show(ui, |ui| {
+                        egui::Grid::new("files-table").striped(true).spacing([16.0,8.0]).show(ui, |ui| {
+                            for title in ["","NAME","GRÖSSE","TYP","GEÄNDERT",""] { ui.label(egui::RichText::new(title).small().strong().color(p.muted)); } ui.end_row();
+                            for entry in rows {
+                                browser::icon(ui,entry.kind=="dir",if entry.kind=="dir" {p.accent} else {p.muted});
+                                let response = ui.add(egui::Button::new(egui::RichText::new(&entry.name).color(p.text)).frame(false));
+                                if response.on_hover_text(&entry.name).clicked() && entry.kind=="dir" {
+                                    navigate=Some((self.root.clone(),if self.path.is_empty() {entry.name.clone()} else {format!("{}/{}",self.path,entry.name)}));
+                                }
+                                ui.label(if entry.kind=="file" {browser::size(entry.size)} else {"–".into()});
+                                ui.label(egui::RichText::new(browser::kind(entry)).small().color(p.muted));
+                                ui.label(egui::RichText::new(browser::modified(entry.mtime)).small().color(p.muted));
+                                if entry.kind=="file" {
+                                    if ui.button("Speichern …").on_hover_text("Datei auf diesem Rechner speichern").clicked() {download=Some(entry.name.clone());}
+                                } else {ui.label("");}
+                                ui.end_row();
                             }
-                        } else if entry.kind == "file" {
-                            ui.label(format!("{} · {} Bytes", entry.name, entry.size));
-                            if ui.button("Herunterladen").clicked() {
-                                download = Some(entry.name.clone());
-                            }
-                        } else {
-                            ui.label(format!("{} · {}", entry.name, entry.kind));
-                        }
+                        });
                     });
                 }
+                ui.separator();
+                if writable {
+                    ui.collapsing("Neuer Ordner", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.new_folder).hint_text("Ordnername").desired_width(240.0));
+                            mkdir=ui.add_enabled(!self.new_folder.trim().is_empty(),egui::Button::new("Anlegen")).clicked();
+                        });
+                    });
+                }
+                ui.small("Dateien werden mit den Rechten deiner Anmeldung übertragen. Bestehende Dateien bleiben erhalten.");
             });
-        if let Some(name) = enter {
-            self.path = if self.path.is_empty() {
-                name
-            } else {
-                format!("{}/{name}", self.path)
-            };
+        });
+        if let Some((root, path)) = navigate {
+            self.root = root;
+            self.path = path;
+            self.file_filter.clear();
             self.refresh(ctx);
+            return;
         }
-        if let Some(name) = download {
-            let nas = self.nas.clone().unwrap();
+        if mkdir {
             let root = self.root.clone();
             let path = self.path.clone();
-            let dest = self.local.clone();
+            let name = std::mem::take(&mut self.new_folder).trim().to_owned();
             self.start(ctx, move || {
-                anyhow::ensure!(
-                    !dest.trim().is_empty() && backup::safe_name(&name),
-                    "Gültigen Zielordner angeben"
-                );
-                nas.download(&root, &path, &name, &PathBuf::from(dest).join(&name))?;
-                Ok(Change::Message("Datei heruntergeladen.".into()))
+                nas.mkdir(&root, &path, &name)?;
+                Ok(Change::Reload(format!("Ordner {name} angelegt.")))
+            });
+            return;
+        }
+        if let Some(name) = download {
+            let root = self.root.clone();
+            let path = self.path.clone();
+            let local = self.local.clone();
+            let progress = Arc::new(transfer::Progress::default());
+            let worker = progress.clone();
+            let label = format!("Herunterladen: {name}");
+            self.start(ctx, move || {
+                anyhow::ensure!(backup::safe_name(&name), "Ungültiger lokaler Dateiname");
+                let mut dialog = rfd::FileDialog::new()
+                    .set_file_name(&name)
+                    .set_title("Datei von der Box speichern");
+                if !local.is_empty() {
+                    dialog = dialog.set_directory(local);
+                }
+                let Some(target) = dialog.save_file() else {
+                    return Ok(Change::Message("Download abgebrochen.".into()));
+                };
+                nas.download_progress(&root, &path, &name, &target, &worker)?;
+                Ok(Change::Message(format!(
+                    "Gespeichert: {}",
+                    target.display()
+                )))
+            });
+            self.transfer = Some(progress);
+            self.status = label;
+            return;
+        }
+        if upload {
+            let root = self.root.clone();
+            let path = self.path.clone();
+            let progress = Arc::new(transfer::Progress::default());
+            let worker = progress.clone();
+            self.start(ctx, move || {
+                let Some(source) = rfd::FileDialog::new()
+                    .set_title("Datei auf die Box hochladen")
+                    .pick_file()
+                else {
+                    return Ok(Change::Message("Upload abgebrochen.".into()));
+                };
+                nas.upload_progress(&root, &path, &source, worker)?;
+                Ok(Change::Reload(format!(
+                    "{} hochgeladen.",
+                    source.file_name().unwrap_or_default().to_string_lossy()
+                )))
+            });
+            self.transfer = Some(progress);
+            self.status = "Datei auswählen und hochladen …".into();
+        }
+    }
+    fn terminal(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(nas) = self.nas.clone().filter(|nas| nas.admin) else {
+            ui.label("Das Terminal steht ausschließlich Administratoren zur Verfügung.");
+            return;
+        };
+        let p = theme::palette(self.dark);
+        ui.label(
+            egui::RichText::new("root@shareos")
+                .monospace()
+                .size(22.0)
+                .color(p.accent),
+        );
+        ui.label(
+            "Eine interaktive Shell auf deiner Box – über das vorhandene ShareOS-Web-Terminal.",
+        );
+        ui.label("Die Sitzung öffnet sich im Standardbrowser. Das Schließen des Terminal-Tabs beendet die Sitzung.");
+        ui.small("Bei HTTPS prüft der Browser das Box-Zertifikat separat. Eine neue Terminal-Sitzung ersetzt eine bereits laufende.");
+        if ui.button("Terminal im Browser öffnen").clicked() {
+            let dark = self.dark;
+            self.start(ctx,move || {
+                let url=nas.terminal(dark)?;
+                webbrowser::open(url.as_str()).map_err(|_|anyhow::anyhow!("Terminal gestartet, aber der Browser konnte nicht geöffnet werden. Standardbrowser prüfen und erneut versuchen."))?;
+                Ok(Change::Message("Admin-Terminal im Browser geöffnet.".into()))
             });
         }
         ui.separator();
-        field(ui, "Lokale Datei zum Hochladen", &mut self.upload);
-        let writable = self.roots.iter().any(|r| r.name == self.root && !r.ro);
-        if ui
-            .add_enabled(
-                writable && self.job.is_none(),
-                egui::Button::new("Hochladen"),
-            )
-            .clicked()
-        {
-            let nas = self.nas.clone().unwrap();
-            let root = self.root.clone();
-            let path = self.path.clone();
-            let source = self.upload.clone();
-            self.start(ctx, move || {
-                nas.upload(&root, &path, &PathBuf::from(source))?;
-                Ok(Change::Message(
-                    "Datei hochgeladen. Zum Anzeigen aktualisieren.".into(),
-                ))
-            });
-        }
-        ui.small("Bestehende Dateien werden nicht überschrieben.");
+        ui.label(
+            egui::RichText::new("Befehle laufen als root und wirken sofort auf die Box.")
+                .color(p.error),
+        );
+        ui.collapsing("Nützliche Diagnosebefehle", |ui| {
+            for (command, description) in [
+                ("uptime", "Laufzeit und Systemlast"),
+                ("df -h", "Freier Speicherplatz"),
+                ("free -m", "Arbeitsspeicher"),
+                ("logread | tail -n 50", "Letzte Systemmeldungen"),
+                ("ip addr", "Netzwerkadressen"),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.monospace(command);
+                    ui.label(description);
+                    if ui.small_button("Kopieren").clicked() {
+                        ui.ctx().copy_text(command.into());
+                    }
+                });
+            }
+        });
     }
     fn network(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.label("SMB-Netzlaufwerk über das Betriebssystem verbinden");
@@ -586,7 +731,21 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        self.poll();
+        self.draw(ctx);
+    }
+}
+impl App {
+    fn draw(&mut self, ctx: &egui::Context) {
+        self.poll(ctx);
+        if self.tab == 5 && !self.nas.as_ref().is_some_and(|nas| nas.admin) {
+            self.tab = 0;
+        }
+        if self.tab == 1
+            && self.job.is_none()
+            && ctx.input(|input| input.key_pressed(egui::Key::F5))
+        {
+            self.refresh(ctx);
+        }
         let p = theme::palette(self.dark);
         egui::TopBottomPanel::top("header")
             .frame(
@@ -633,6 +792,9 @@ impl eframe::App for App {
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     for (i, tab) in TABS.iter().enumerate() {
+                        if i == 5 && !self.nas.as_ref().is_some_and(|nas| nas.admin) {
+                            continue;
+                        }
                         let active = self.tab == i;
                         let text = egui::RichText::new(tab.to_uppercase())
                             .size(12.0)
@@ -702,6 +864,13 @@ impl eframe::App for App {
                         p.muted
                     };
                     ui.label(egui::RichText::new(&self.status).size(12.0).color(color));
+                    if let Some(progress)=&self.transfer {
+                        let (done,total)=progress.values();
+                        if total>0 {
+                            ui.add(egui::ProgressBar::new((done as f64/total as f64).min(1.0) as f32).desired_width(180.0).text(format!("{} / {}",browser::size(done),browser::size(total))));
+                        } else {ui.label(browser::size(done));}
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    }
                 });
             });
         egui::CentralPanel::default()
@@ -733,7 +902,8 @@ impl eframe::App for App {
                                 1 => self.files(ui, ctx),
                                 2 => self.network(ui, ctx),
                                 3 => self.backups(ui, ctx),
-                                _ => self.settings(ui, ctx),
+                                4 => self.settings(ui, ctx),
+                                _ => self.terminal(ui, ctx),
                             });
                         });
                 });
@@ -758,6 +928,48 @@ fn main() -> eframe::Result {
                 .with_icon(icon),
             ..Default::default()
         },
-        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
     )
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use super::*;
+    #[test]
+    fn all_views_render_in_both_themes_without_a_display_server() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.nas = Some(Nas::test_session(true));
+        app.roots = vec![Root {
+            name: "Team".into(),
+            home: false,
+            ro: false,
+        }];
+        app.selected = vec![false];
+        app.root = "Team".into();
+        app.entries = serde_json::from_value(serde_json::json!([
+            {"name":"Dokumente","type":"dir","size":0},
+            {"name":"Urlaub.jpg","type":"file","size":123456}
+        ]))
+        .unwrap();
+        for dark in [true, false] {
+            app.dark = dark;
+            theme::apply(&ctx, dark);
+            for tab in 0..TABS.len() {
+                app.tab = tab;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| app.draw(ctx),
+                );
+                assert!(!output.shapes.is_empty());
+                assert!(app.job.is_none());
+            }
+        }
+    }
 }

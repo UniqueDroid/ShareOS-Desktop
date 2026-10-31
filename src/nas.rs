@@ -28,6 +28,8 @@ pub struct Entry {
     #[serde(rename = "type")]
     pub kind: String,
     pub size: u64,
+    #[serde(default)]
+    pub mtime: Option<i64>,
 }
 #[derive(Deserialize)]
 pub struct Listing {
@@ -57,6 +59,17 @@ pub fn base_url(input: &str) -> Result<Url> {
     Ok(url)
 }
 impl Nas {
+    #[cfg(test)]
+    pub(crate) fn test_session(admin: bool) -> Self {
+        Self {
+            base: base_url("https://box.local").unwrap(),
+            http: Http::new(),
+            sid: "test".into(),
+            user: "test".into(),
+            admin,
+        }
+    }
+
     pub fn connect(
         address: &str,
         user: String,
@@ -147,11 +160,37 @@ impl Nas {
     }
     // create_new prevents an existing local file from being overwritten.
     pub fn download(&self, root: &str, path: &str, name: &str, target: &Path) -> Result<()> {
+        self.download_progress(
+            root,
+            path,
+            name,
+            target,
+            &crate::transfer::Progress::default(),
+        )
+    }
+    pub fn download_progress(
+        &self,
+        root: &str,
+        path: &str,
+        name: &str,
+        target: &Path,
+        progress: &crate::transfer::Progress,
+    ) -> Result<()> {
+        use std::io::{Read, Write};
         let url = self.ticket(root, path, name, "get")?;
         let mut response = self.http.get(url).send()?.error_for_status()?;
+        progress.total(response.content_length().unwrap_or(0));
         let mut file = private_file(target)?;
         let result = (|| -> Result<()> {
-            response.copy_to(&mut file)?;
+            let mut buffer = [0u8; 65536];
+            loop {
+                let n = response.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                file.write_all(&buffer[..n])?;
+                progress.add(n);
+            }
             file.sync_all()?;
             Ok(())
         })();
@@ -162,22 +201,58 @@ impl Nas {
         }
         Ok(())
     }
-    pub fn upload(&self, root: &str, path: &str, source: &Path) -> Result<()> {
+    pub fn upload_progress(
+        &self,
+        root: &str,
+        path: &str,
+        source: &Path,
+        progress: std::sync::Arc<crate::transfer::Progress>,
+    ) -> Result<()> {
         let name = source
             .file_name()
             .and_then(|s| s.to_str())
             .context("Dateiname ist kein UTF-8")?;
-        let url = self.ticket(root, path, name, "put")?;
         let file = File::open(source)?;
+        let total = file.metadata()?.len();
+        progress.total(total);
+        let url = self.ticket(root, path, name, "put")?;
+        let body = reqwest::blocking::Body::sized(
+            crate::transfer::Reader {
+                inner: file,
+                progress,
+            },
+            total,
+        );
         let data: Value = self
             .http
             .post(url)
-            .body(file)
+            .body(body)
             .send()?
             .error_for_status()?
             .json()?;
         ensure!(data["ok"] == true, "Übertragung fehlgeschlagen");
         Ok(())
+    }
+    pub fn mkdir(&self, root: &str, path: &str, name: &str) -> Result<()> {
+        ensure!(
+            crate::backup::safe_name(name),
+            "Gültigen Ordnernamen angeben"
+        );
+        self.rpc(
+            "shareos.files",
+            "mkdir",
+            json!({"root":root,"path":path,"name":name}),
+        )?;
+        Ok(())
+    }
+    pub fn terminal(&self, dark: bool) -> Result<Url> {
+        ensure!(self.admin, "Administratorrechte erforderlich");
+        let p = crate::theme::palette(dark);
+        let hex = |c: eframe::egui::Color32| format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
+        let data=self.rpc("shareos.system","terminal",json!({"tls":self.base.scheme()=="https","theme":{
+            "background":hex(p.bg),"foreground":hex(p.text),"cursor":hex(p.accent),"selectionBackground":hex(p.dim)
+        }}))?;
+        terminal_url(&self.base, &data)
     }
     pub fn settings(&self, password: &str) -> Result<Value> {
         ensure!(self.admin, "Administratorrechte erforderlich");
@@ -191,6 +266,21 @@ impl Nas {
             json!({"content":content,"password":password,"apply":apply}),
         )
     }
+}
+fn terminal_url(base: &Url, data: &Value) -> Result<Url> {
+    let port = data["port"]
+        .as_u64()
+        .filter(|n| (1..=65535).contains(n))
+        .context("Ungültiger Terminal-Port")? as u16;
+    let path = data["path"]
+        .as_str()
+        .filter(|s| s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+        .context("Ungültige Terminal-Sitzung")?;
+    let mut url = base.clone();
+    url.set_port(Some(port))
+        .map_err(|_| anyhow!("Ungültiger Terminal-Port"))?;
+    url.set_path(&format!("/{path}/"));
+    Ok(url)
 }
 fn decode(response: Value) -> Result<Value> {
     if let Some(error) = response.get("error") {
@@ -398,6 +488,7 @@ mod integration_tests {
         let nas = Nas::connect(&address, "alice".into(), "test-password", None).unwrap();
         assert!(!nas.admin);
         assert!(nas.settings("").is_err());
+        assert!(nas.terminal(false).is_err());
         let roots = nas.roots().unwrap();
         assert!(roots[0].home && roots[1].ro);
         let calls = server.join().unwrap();
@@ -405,6 +496,44 @@ mod integration_tests {
         assert_eq!(calls[1]["params"][0], "abc");
         assert_eq!(calls[1]["params"][1], "shareos.me");
         assert_eq!(calls[1]["params"][2], "bind");
+    }
+    #[test]
+    fn admin_terminal_uses_existing_rpc_and_keeps_box_host_and_tls() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let (address, server) = mock(vec![
+            reply(json!({"ubus_rpc_session":"abc"})),
+            reply(json!({"role":"admin"})),
+            reply(json!({"port":7681,"path":token})),
+        ]);
+        let nas = Nas::connect(&address, "root".into(), "test-password", None).unwrap();
+        let url = nas.terminal(true).unwrap();
+        assert_eq!(url.host_str(), nas.base.host_str());
+        assert_eq!(url.scheme(), nas.base.scheme());
+        assert_eq!(url.port(), Some(7681));
+        assert_eq!(url.path(), format!("/{token}/"));
+        let calls = server.join().unwrap();
+        assert_eq!(calls[2]["params"][1], "shareos.system");
+        assert_eq!(calls[2]["params"][2], "terminal");
+        assert_eq!(calls[2]["params"][3]["theme"]["background"], "#06090d");
+        assert_eq!(calls[2]["params"][3]["tls"], false);
+    }
+    #[test]
+    fn terminal_rejects_invalid_port_or_session_path() {
+        let base = base_url("https://box.local").unwrap();
+        for data in [
+            json!({"port":0,"path":"0123456789abcdef0123456789abcdef"}),
+            json!({"port":65536,"path":"0123456789abcdef0123456789abcdef"}),
+            json!({"port":7681,"path":"../../other-host"}),
+        ] {
+            assert!(terminal_url(&base, &data).is_err());
+        }
+        let url = terminal_url(
+            &base,
+            &json!({"port":7681,"path":"0123456789abcdef0123456789abcdef"}),
+        )
+        .unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("box.local"));
     }
     #[test]
     fn binding_failure_does_not_grant_admin_access() {
@@ -437,6 +566,104 @@ mod integration_tests {
         )
         .is_err());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::Arc,
+        thread,
+    };
+    type Request = (String, Vec<u8>);
+    fn mock(responses: Vec<(Vec<u8>, usize)>) -> (Nas, thread::JoinHandle<Vec<Request>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = base_url(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let handle = thread::spawn(move || {
+            let mut requests = vec![];
+            for (body, advertised) in responses {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut header = vec![];
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let length = header
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                let mut input = vec![0; length];
+                socket.read_exact(&mut input).unwrap();
+                requests.push((header, input));
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {advertised}\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                socket.write_all(&body).unwrap();
+            }
+            requests
+        });
+        let nas = Nas {
+            base,
+            http: Http::builder().no_proxy().build().unwrap(),
+            sid: "test".into(),
+            user: "alice".into(),
+            admin: false,
+        };
+        (nas, handle)
+    }
+    fn ticket() -> (Vec<u8>, usize) {
+        let bytes = json!({"result":[0,{"url":"/cgi-bin/files?t=test"}]})
+            .to_string()
+            .into_bytes();
+        let size = bytes.len();
+        (bytes, size)
+    }
+    #[test]
+    fn upload_sends_known_length_and_reports_transferred_bytes() {
+        let data = vec![42u8; 130_000];
+        let reply = b"{\"ok\":true}".to_vec();
+        let (nas, server) = mock(vec![ticket(), (reply.clone(), reply.len())]);
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("example.bin");
+        std::fs::write(&source, &data).unwrap();
+        let progress = Arc::new(crate::transfer::Progress::default());
+        nas.upload_progress("Team", "", &source, progress.clone())
+            .unwrap();
+        assert_eq!(progress.values(), (130_000, 130_000));
+        let requests = server.join().unwrap();
+        assert_eq!(requests[1].1, data);
+        assert!(requests[1]
+            .0
+            .to_lowercase()
+            .contains("content-length: 130000"));
+        let ticket: Value = serde_json::from_slice(&requests[0].1).unwrap();
+        assert_eq!(ticket["params"][3]["overwrite"], false);
+    }
+    #[test]
+    fn interrupted_download_removes_partial_file() {
+        let (nas, server) = mock(vec![ticket(), (b"partial".to_vec(), 100)]);
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("file.bin");
+        let progress = crate::transfer::Progress::default();
+        assert!(nas
+            .download_progress("Team", "", "file.bin", &target, &progress)
+            .is_err());
+        assert!(!target.exists());
         server.join().unwrap();
     }
 }
