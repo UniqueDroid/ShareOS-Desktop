@@ -611,7 +611,7 @@ impl eframe::App for App {
                                 .color(p.accent),
                         );
                         ui.label(
-                            egui::RichText::new(concat!("Version ", env!("CARGO_PKG_VERSION")))
+                            egui::RichText::new(concat!("Version · ", env!("CARGO_PKG_VERSION")))
                                 .size(13.0)
                                 .color(p.muted),
                         );
