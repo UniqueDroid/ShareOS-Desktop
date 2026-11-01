@@ -250,6 +250,16 @@ impl Nas {
             .file_name()
             .and_then(|s| s.to_str())
             .context("Dateiname ist kein UTF-8")?;
+        self.upload_named_progress(root, path, source, name, progress)
+    }
+    pub fn upload_named_progress(
+        &self,
+        root: &str,
+        path: &str,
+        source: &Path,
+        name: &str,
+        progress: std::sync::Arc<crate::transfer::Progress>,
+    ) -> Result<()> {
         let file = File::open(source)?;
         let total = file.metadata()?.len();
         progress.total(total);
@@ -811,6 +821,89 @@ mod transfer_tests {
             .contains("content-length: 130000"));
         let ticket: Value = serde_json::from_slice(&requests[0].1).unwrap();
         assert_eq!(ticket["params"][3]["overwrite"], false);
+    }
+    fn rpc_response(value: Value) -> (Vec<u8>, usize) {
+        let bytes = json!({"result":[0,value]}).to_string().into_bytes();
+        let size = bytes.len();
+        (bytes, size)
+    }
+    #[test]
+    fn file_drop_creates_folder_only_in_personal_home_and_uploads_there() {
+        let (nas, server) = mock(vec![
+            rpc_response(
+                json!({"roots":[{"name":"Team","home":false},{"name":"home","home":true}]}),
+            ),
+            rpc_response(json!({"entries":[]})),
+            rpc_response(json!({"ok":true})),
+            rpc_response(json!({"entries":[]})),
+            ticket(),
+            (b"{\"ok\":true}".to_vec(), 11),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("note.txt");
+        std::fs::write(&source, b"hello").unwrap();
+        let report = crate::file_drop::upload(&nas, vec![source]).unwrap();
+        assert_eq!(report.uploaded, 1);
+        assert!(report.failures.is_empty());
+        let requests = server.join().unwrap();
+        let mkdir: Value = serde_json::from_slice(&requests[2].1).unwrap();
+        assert_eq!(mkdir["params"][2], "mkdir");
+        assert_eq!(mkdir["params"][3]["root"], "home");
+        assert_eq!(mkdir["params"][3]["name"], "File Drop");
+        let upload: Value = serde_json::from_slice(&requests[4].1).unwrap();
+        assert_eq!(upload["params"][3]["root"], "home");
+        assert_eq!(upload["params"][3]["path"], "File Drop");
+        assert_eq!(upload["params"][3]["overwrite"], false);
+        assert_eq!(requests[5].1, b"hello");
+    }
+    #[test]
+    fn file_drop_reuses_existing_folder_and_renames_duplicate() {
+        let (nas, server) = mock(vec![
+            rpc_response(json!({"roots":[{"name":"home","home":true}]})),
+            rpc_response(json!({"entries":[{"name":"File Drop","type":"dir","size":0}]})),
+            rpc_response(json!({"entries":[{"name":"note.txt","type":"file","size":5}]})),
+            ticket(),
+            (b"{\"ok\":true}".to_vec(), 11),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("note.txt");
+        std::fs::write(&source, b"hello").unwrap();
+        assert_eq!(
+            crate::file_drop::upload(&nas, vec![source])
+                .unwrap()
+                .uploaded,
+            1
+        );
+        let requests = server.join().unwrap();
+        let upload: Value = serde_json::from_slice(&requests[3].1).unwrap();
+        assert_eq!(upload["params"][3]["name"], "note (2).txt");
+        assert_eq!(requests.len(), 5);
+    }
+    #[test]
+    fn file_drop_never_falls_back_to_a_shared_root_or_read_only_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("note.txt");
+        std::fs::write(&source, b"hello").unwrap();
+        for roots in [
+            json!([{"name":"Team","home":false}]),
+            json!([{"name":"home","home":true,"ro":true}]),
+        ] {
+            let (nas, server) = mock(vec![rpc_response(json!({"roots":roots}))]);
+            assert!(crate::file_drop::upload(&nas, vec![source.clone()]).is_err());
+            assert_eq!(server.join().unwrap().len(), 1);
+        }
+    }
+    #[test]
+    fn file_drop_rejects_a_file_named_like_the_destination_folder() {
+        let (nas, server) = mock(vec![
+            rpc_response(json!({"roots":[{"name":"home","home":true}]})),
+            rpc_response(json!({"entries":[{"name":"File Drop","type":"file","size":5}]})),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("note.txt");
+        std::fs::write(&source, b"hello").unwrap();
+        assert!(crate::file_drop::upload(&nas, vec![source]).is_err());
+        assert_eq!(server.join().unwrap().len(), 2);
     }
     #[test]
     fn interrupted_download_removes_partial_file() {

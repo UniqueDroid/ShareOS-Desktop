@@ -1,6 +1,16 @@
 # ShareOS Desktop
 
-Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 28 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
+Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 34 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
+
+## Schnell installieren und unter Windows testen
+
+Linux (nach Installation der [Build-Abhängigkeiten](docs/INSTALL.md#linux-installation-per-curl)):
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/UniqueDroid/ShareOS-Desktop/main/scripts/install.sh | sh
+```
+
+Der Installer lädt den Quellcode, installiert bei Bedarf Rust im Benutzerkonto und baut die App lokal. Zum Aktualisieren denselben Befehl erneut ausführen. Installationspfade, Voraussetzungen und die Anleitung für **Windows mit Rust/MSVC** stehen unter **[Installation und Tests](docs/INSTALL.md)**.
 
 ## Starten und prüfen
 
@@ -29,7 +39,7 @@ Anmeldepasswörter und Sitzungstokens der Desktop-App werden nicht auf Platte ge
 
 ## Stand der Prüfung
 
-28 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
+34 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
 
 Noch nicht enthalten: geplante Backups, inkrementelle Speicherung, automatische Aufbewahrung, Windows-/macOS-Installer und Signierung. Für Linux liegt ein lokales Installationsskript bei. Upload und Download verwenden native Dateidialoge. Die Box-Einstellungen verwenden ebenfalls Dateidialoge. Der Dateibackup-Bereich verwendet weiterhin Pfadeingabefelder. Unter Linux benötigen die Dialoge einen laufenden `xdg-desktop-portal`-Dienst mit passendem Desktop-Backend (beispielsweise KDE oder GTK).
 
@@ -109,3 +119,9 @@ Bis /22 wird das erkannte Netz durchsucht. Größere Netze werden auf den /24-Ad
 Die synchronen XDG-Portal-Dateidialoge verwenden das `async-std`/`async-io`-Backend von rfd/ashpd/zbus. Dadurch benötigen die Hintergrundthreads der App keine eigene Tokio-Laufzeit. Ein isolierter Regressionstest ruft Dateiöffnung und Speicherdialog ohne Tokio, ohne erreichbaren D-Bus und ohne grafischen Fallback auf; fehlende Dienste führen dabei zu einem regulären Abbruch statt zum Reactor-Panic.
 
 Vor der Anmeldung ist ausschließlich **Box finden** sichtbar. Nach erfolgreicher Anmeldung werden die weiteren Bereiche eingeblendet. Das Terminal bleibt zusätzlich auf Administratoren beschränkt. Beim Abmelden wird die aktive Ansicht auf Box finden zurückgesetzt.
+
+## File Drop
+
+Im Bereich **Dateien** lokale Dateien in die App ziehen: Die App legt im eigenen NAS-Home bei Bedarf **File Drop** an und lädt die Dateien dort hoch. Das Ziel ist unabhängig vom aktuell geöffneten Ordner. Namenskonflikte erhalten einen Zusatz wie ` (2)`; bestehende Dateien werden nicht überschrieben. Nach erfolgreichem Upload zeigt der Dateibrowser den File-Drop-Ordner an. Ordner-Uploads sind nicht enthalten. Details: [File Drop](docs/INSTALL.md#file-drop).
+
+Installer-Smoke-Test (ohne Downloads und echte Builds): `python3 -m unittest discover -s tests -v`.

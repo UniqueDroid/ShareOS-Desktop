@@ -2,10 +2,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 cargo build --release --locked
+target_dir=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 # Use a stable path and matching desktop ID so Wayland can resolve the icon.
 app_data="${XDG_DATA_HOME:-$HOME/.local/share}"
 app_bin="$HOME/.local/bin"
-install -Dm755 target/release/shareos-desktop "$app_bin/shareos-desktop"
+install -Dm755 "$target_dir/release/shareos-desktop" "$app_bin/shareos-desktop"
 install -Dm644 assets/icon-512.png "$app_data/icons/hicolor/512x512/apps/de.shareos.desktop.png"
 install -Dm644 packaging/linux/de.shareos.desktop.desktop "$app_data/applications/de.shareos.desktop.desktop"
 # Desktop Exec fields have their own quoting rules; no shell expansion occurs.

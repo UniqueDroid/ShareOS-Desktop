@@ -2,6 +2,7 @@
 mod backup;
 mod browser;
 mod drives;
+mod file_drop;
 mod nas;
 mod preferences;
 mod terminal;
@@ -41,6 +42,7 @@ enum Change {
     Preview(Value, String, String),
     Logout,
     Reload(String),
+    FileDrop(file_drop::Report),
     Shares(Vec<nas::Share>),
     SettingsFile(String, String),
 }
@@ -206,6 +208,16 @@ impl App {
                             }
                             Change::SettingsFile(path, message) => {
                                 self.settings_file = path;
+                                self.status = message;
+                            }
+                            Change::FileDrop(report) => {
+                                let message = report.summary();
+                                if report.uploaded > 0 {
+                                    self.root = report.root;
+                                    self.path = file_drop::FOLDER.into();
+                                    self.file_filter.clear();
+                                    self.refresh(ctx);
+                                }
                                 self.status = message;
                             }
                             Change::Reload(message) => {
@@ -412,6 +424,16 @@ impl App {
             .roots
             .iter()
             .any(|root| root.name == self.root && !root.ro);
+        let home_available = self.roots.iter().any(|root| root.home && !root.ro);
+        let hovering = ctx.input(|input| !input.raw.hovered_files.is_empty());
+        egui::Frame::new().fill(if hovering {p.hover}else{p.bg})
+            .stroke(egui::Stroke::new(1.0_f32,if hovering {p.accent}else{p.line}))
+            .corner_radius(10).inner_margin(16).show(ui,|ui| {
+                ui.set_min_width((ui.available_width()-32.0).max(0.0));
+                ui.label(egui::RichText::new("FILE DROP").strong().color(p.accent));
+                ui.label(if home_available {"Dateien hierher ziehen → Eigene Dateien / File Drop"}else{"File Drop benötigt einen eigenen beschreibbaren NAS-Ordner."});
+                ui.small("Der Ordner wird bei Bedarf angelegt. Bestehende Dateien werden nicht überschrieben.");
+            });
         let mut navigate = None;
         let mut download = None;
         let mut upload = false;
@@ -600,6 +622,34 @@ impl App {
                     ui.label("Terminal bereit. Klicke auf „Terminal verbinden“. ");
                 });
         }
+    }
+    fn receive_file_drop(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|input| input.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        if self.tab != 1 || self.nas.is_none() {
+            self.status = "Fehler: Für File Drop anmelden und den Bereich Dateien öffnen.".into();
+            return;
+        }
+        if self.job.is_some() {
+            self.status =
+                "Fehler: Bitte die laufende Aufgabe abwarten und die Dateien erneut ablegen."
+                    .into();
+            return;
+        }
+        let paths: Vec<_> = dropped.into_iter().filter_map(|file| file.path).collect();
+        if paths.is_empty() {
+            self.status = "Fehler: File Drop benötigt lokale Dateien aus dem Dateimanager.".into();
+            return;
+        }
+        let count = paths.len();
+        let nas = self.nas.clone().unwrap();
+        self.start(ctx, move || {
+            Ok(Change::FileDrop(file_drop::upload(&nas, paths)?))
+        });
+        self.status =
+            format!("File Drop: {count} Datei(en) werden in den eigenen NAS-Ordner hochgeladen …");
     }
     fn network(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.label("Deine verfügbaren SMB-Freigaben");
@@ -879,6 +929,7 @@ impl eframe::App for App {
 impl App {
     fn draw(&mut self, ctx: &egui::Context) {
         self.poll(ctx);
+        self.receive_file_drop(ctx);
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
         }
@@ -1094,6 +1145,27 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod ui_tests {
     use super::*;
+    #[test]
+    fn file_drop_requires_files_view_login_and_idle_worker() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        let input = || egui::RawInput {
+            dropped_files: vec![egui::DroppedFile {
+                path: Some(PathBuf::from("example.txt")),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(input(), |ctx| app.receive_file_drop(ctx));
+        assert!(app.job.is_none());
+        assert!(app.status.contains("anmelden"));
+        app.nas = Some(Nas::test_session(false));
+        app.tab = 1;
+        let (_tx, rx) = mpsc::channel();
+        app.job = Some(rx);
+        let _ = ctx.run(input(), |ctx| app.receive_file_drop(ctx));
+        assert!(app.status.contains("laufende Aufgabe"));
+    }
     #[test]
     fn navigation_requires_login_and_terminal_requires_admin() {
         let visible = |logged_in, admin| {
