@@ -49,7 +49,7 @@ def mac_app(root, binary, version):
             "CFBundleIconFile": "shareos.icns",
             "LSMinimumSystemVersion": "11.0",
             "NSHighResolutionCapable": True,
-            "NSLocalNetworkUsageDescription": "ShareOS Desktop verbindet sich mit deiner NAS im lokalen Netzwerk.",
+            "NSLocalNetworkUsageDescription": "ShareOS Desktop connects to your NAS on the local network.",
         }, file)
     # Local ad-hoc signature; no Apple certificate or notarization is claimed.
     subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
@@ -70,24 +70,24 @@ def package(platform, target, binary, commit, output, rust_version):
         root.mkdir()
         if platform == "macos":
             mac_app(root, binary, version)
-            instructions = "ShareOS Desktop.app nach Programme kopieren und starten.\n"
+            instructions = "Copy ShareOS Desktop.app to Applications and launch it.\n"
         else:
             destination = root / ("shareos-desktop.exe" if platform == "windows" else "shareos-desktop")
             shutil.copy2(binary, destination)
             destination.chmod(0o755)
-            instructions = "shareos-desktop.exe starten.\n" if platform == "windows" else "Im Terminal: chmod +x shareos-desktop && ./shareos-desktop\n"
+            instructions = "Launch shareos-desktop.exe.\n" if platform == "windows" else "In a terminal: chmod +x shareos-desktop && ./shareos-desktop\n"
         shutil.copy2(ROOT / "LICENSE", root / "LICENSE")
         shutil.copy2(ROOT / "assets/icon-512.png", root / "shareos-icon.png")
         metadata = {"version": version, "commit": commit, "target": target,
                     "platform": platform, "rust": rust_version}
         (root / "BUILD-INFO.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-        (root / "STARTEN.txt").write_text(
-            "ShareOS Desktop – automatischer Test-Build\n\n" + instructions +
-            "Rust/Cargo sind zum Ausführen nicht erforderlich.\n"
-            "Linux benötigt die üblichen X11/Wayland/OpenGL-Laufzeitbibliotheken.\n"
-            "Windows-Builds sind nicht signiert. macOS-Bundles sind nur ad-hoc signiert und nicht notarisiert.\n"
-            "Die Build-Prüfung ersetzt keinen Test an deiner NAS.\n\n"
-            "Projekt: https://github.com/UniqueDroid/ShareOS-Desktop\n", encoding="utf-8")
+        (root / "START-HERE.txt").write_text(
+            "ShareOS Desktop – preview build\n\n" + instructions +
+            "Rust/Cargo is not required to run this application.\n"
+            "Linux requires the usual X11/Wayland/OpenGL runtime libraries.\n"
+            "Windows builds are unsigned. macOS bundles are ad-hoc signed and are not notarized.\n"
+            "Build validation does not replace testing with your NAS.\n\n"
+            "Project: https://github.com/UniqueDroid/ShareOS-Desktop\n", encoding="utf-8")
         if platform == "linux":
             with tarfile.open(archive, "w:gz") as file:
                 def permissions(member):
@@ -126,8 +126,8 @@ def main():
         with open(summary, "a", encoding="utf-8") as file:
             file.write(f"### ShareOS Desktop: {args.target}\n\n"
                        f"- Version: `{tomllib.loads((ROOT / 'Cargo.toml').read_text())['package']['version']}`\n"
-                       f"- Commit: `{args.commit}`\n- Paket: `{archive.name}`\n"
-                       f"- Prüfsumme: `{checksum.name}`\n\nDownload unter **Artifacts** dieses Workflow-Laufs.\n")
+                       f"- Commit: `{args.commit}`\n- Package: `{archive.name}`\n"
+                       f"- Checksum: `{checksum.name}`\n")
 
 
 if __name__ == "__main__":

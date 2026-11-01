@@ -1,7 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=ShareOS Desktop
-Comment=Dateien, Netzlaufwerke und Backups für deine ShareOS-Box
+Comment=Files, network drives, and backups for your ShareOS box
+Comment[de]=Dateien, Netzlaufwerke und Backups für deine ShareOS-Box
 Exec=shareos-desktop
 Icon=de.shareos.desktop
 Terminal=false

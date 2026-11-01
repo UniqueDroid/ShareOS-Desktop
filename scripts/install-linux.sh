@@ -15,7 +15,7 @@ import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 exe = sys.argv[2]
 if any(c in exe for c in '\n\r'):
-    raise SystemExit('Installationspfad enthält Zeilenumbrüche')
+    raise SystemExit('Installation path contains line breaks')
 for char in ('\\', '"', '`', '$'):
     exe = exe.replace(char, '\\' + char)
 exe = exe.replace('%', '%%')
@@ -29,4 +29,4 @@ fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$app_data/applications" >/dev/null 2>&1 || true
 fi
-printf '%s\n' 'ShareOS Desktop ist im Anwendungsmenü installiert. App schließen und dort neu starten.'
+printf '%s\n' 'ShareOS Desktop is installed in the application menu. Close the app and launch it from there.'

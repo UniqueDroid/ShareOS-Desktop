@@ -1,24 +1,24 @@
 # ShareOS Desktop
 
-Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 42 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
+An early Rust desktop application for Windows, Linux, and macOS, built with egui/eframe. This is a standalone project alongside [ShareOS](https://github.com/UniqueDroid/ShareOS); it does not modify the NAS firmware. Original logos and icons come from `ShareOS/src/shareos-core/www/` (GPLv2).
 
 ## Downloads
 
-Fertige Pakete für **Linux x64**, **Windows x64**, **macOS Apple Silicon** und **macOS Intel** stehen unter **[Releases](https://github.com/UniqueDroid/ShareOS-Desktop/releases)** bereit, sobald die Builds der jeweiligen Version abgeschlossen sind. Zum Starten ist kein Rust nötig. Hinweise zum Starten: [Installation](docs/INSTALL.md#fertige-pakete).
+Packages for **Linux x64**, **Windows x64**, **macOS Apple Silicon**, and **macOS Intel** are available under **[Releases](https://github.com/UniqueDroid/ShareOS-Desktop/releases)** once that version's builds finish. Rust is not required to run them. See [Installation and testing](docs/INSTALL.md#prebuilt-packages).
 
-## Schnell installieren und unter Windows testen
+## Quick Linux installation
 
-Linux (nach Installation der [Build-Abhängigkeiten](docs/INSTALL.md#linux-installation-per-curl)):
+Install the [build dependencies](docs/INSTALL.md#linux-installation-with-curl), then run:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/UniqueDroid/ShareOS-Desktop/main/scripts/install.sh | sh
 ```
 
-Der Installer lädt den Quellcode, installiert bei Bedarf Rust im Benutzerkonto und baut die App lokal. Zum Aktualisieren denselben Befehl erneut ausführen. Installationspfade, Voraussetzungen und die Anleitung für **Windows mit Rust/MSVC** stehen unter **[Installation und Tests](docs/INSTALL.md)**.
+The installer downloads the source, installs Rust for your user account if needed, and builds locally. Run the same command to update. See [Installation and testing](docs/INSTALL.md) for installation paths, requirements, and Windows instructions.
 
-## Starten und prüfen
+## Build and check
 
-Rust stable mit Cargo installieren, dann im Projektverzeichnis:
+Install stable Rust with Cargo, then run in the project directory:
 
 ```sh
 cargo run --locked
@@ -26,128 +26,104 @@ cargo test --locked
 cargo build --release --locked
 ```
 
-Die Binärdatei liegt unter `target/release/shareos-desktop` (Windows: `.exe`). Auf jedem Zielsystem nativ bauen. Windows benötigt die MSVC-Buildtools, macOS die Xcode Command Line Tools, Linux einen C-Linker und X11/Wayland/OpenGL-Laufzeitbibliotheken. Linux-SMB benötigt einen Dateimanager mit SMB-Unterstützung, beispielsweise Dolphin mit `kio-extras` oder einen GVfs-basierten Dateimanager mit GVfs-SMB. Windows- und macOS-Builds wurden in dieser Linux-Umgebung noch nicht geprüft; für Windows und macOS gibt es noch keine Installer oder Signierung.
+The executable is `target/release/shareos-desktop` (`shareos-desktop.exe` on Windows). Build natively on each target system. Windows requires the MSVC build tools, macOS requires Xcode Command Line Tools, and Linux requires a C linker and X11/Wayland/OpenGL libraries. Linux SMB access requires an SMB-capable file manager, such as Dolphin with `kio-extras` or a GVfs-based file manager with GVfs-SMB.
 
-## Die fünf Bereiche
+## Features
 
-- **Box finden:** Ein Klick auf „Boxen suchen“ erkennt die lokalen IPv4-Adressen und Netzmasken und durchsucht deren Netze automatisch. Zusätzlich werden `shareos.local`, `192.168.0.32` und die eingegebene Box-Adresse geprüft. Die manuelle Subnetzvorgabe bleibt unter „Erweiterte Suche“ verfügbar. Manuelle Box-Adresse mit HTTP oder HTTPS und optional Port möglich. Die Suche identifiziert die bestehende ShareOS-Webanwendung; sie ist keine mDNS-Dienstsuche. HTTPS verwendet standardmäßig den Zertifikatsspeicher des Betriebssystems. Die Suche prüft HTTP und HTTPS, auch bei selbstsignierten Box-Zertifikaten; dabei werden keine Anmeldedaten gesendet. Zusätzlich wird die eingegebene Box-Adresse geprüft. Ein Suchtreffer bedeutet noch kein Zertifikatsvertrauen. Bei HTTP werden auch Anmeldedaten unverschlüsselt übertragen.
-- **Dateien:** `session.login`, anschließend verpflichtend `shareos.me.bind`. Ohne erfolgreiche Benutzerzuordnung kein Zugriff und keine angenommene Administratorrolle. Ordner und Leserechte kommen aus `shareos.files.roots`; Listen über `shareos.files.list`. Downloads und Uploads verwenden kurzlebige Einmaltickets von `shareos.files.ticket` und `/cgi-bin/files`. Übertragungen laufen im Hintergrund. Bestehende lokale oder entfernte Dateien werden nicht absichtlich überschrieben. Nach der Anmeldung werden die Dateien automatisch geladen; auch nach Uploads und neuen Ordnern wird die Ansicht aktualisiert. Sitzung nach einer Stunde gegebenenfalls erneut anmelden.
-- **Netzlaufwerke:** Windows `net.exe use S: \\box\freigabe /persistent:no`, macOS `open smb://…`, Linux `xdg-open smb://benutzer@box/freigabe` (ersatzweise `gio open`). Die Betriebssystem-Anmeldung ist unabhängig von der Desktop-Websitzung. Unter Windows vorher passende Zugangsdaten in der Anmeldeinformationsverwaltung speichern. Eigene SMB-Ordner und berechtigte Freigaben werden aus `shareos.me.bind` beziehungsweise `shareos.me.get` übernommen und mit Leserechten angezeigt. Manuelle Eingabe bleibt möglich. SMB-Verbindung und Berechtigungen müssen auf dem jeweiligen Zielsystem getestet werden.
-- **Dateibackup:** Ausgewählte eigene Ordner und freigegebene Ordner rekursiv lokal sichern, einschließlich versteckter Dateien. Die NAS prüft bei jedem Aufruf die Benutzerrechte. Nur vollständige Durchläufe werden als `snapshot-…` sichtbar; Fehler verwerfen den unvollständigen Sicherungsstand. Bei abgeschnittenen NAS-Verzeichnislisten (mehr als 2000 Einträge) wird abgebrochen. Links und Spezialdateien werden ausgelassen und gezählt. Dateien werden nacheinander gelesen; Änderungen während des Backups sind möglich, es ist kein atomarer NAS-Snapshot. Unterverzeichnisse werden über ihre Dateien gesichert; leere Ordner, POSIX-Rechte und ACLs werden noch nicht wiederhergestellt. Sicherungsdaten bleiben unverschlüsselt auf dem lokalen Datenträger; verschlüsselten Datenträger verwenden, falls erforderlich.
-- **Wiederherstellung im Dateibackup:** Sicherungsstand öffnen, lokalen Zielordner angeben und einzelne Datei wiederherstellen. SHA-256 und Dateigröße werden geprüft; bestehende Dateien werden abgewiesen. Dateien landen mit ihrem ursprünglichen Namen im gewählten Zielordner. Für gleichnamige Dateien aus verschiedenen NAS-Ordnern unterschiedliche Zielordner verwenden. Rückübertragung zur Box erfolgt anschließend über Dateien mit aktuellen Schreibrechten.
-- **Box-Einstellungen:** Nur bei bestätigter Administratorrolle. `shareos.backup.export` liefert die Sicherungsdatei, optional durch die NAS mit dem angegebenen Kennwort verschlüsselt. Ein nativer Speicherdialog schlägt den Dateinamen der Box vor; ein leerer Dateipfad ist dadurch kein Fehler mehr. Das Kennwort muss leer sein oder mindestens sechs Zeichen enthalten. Bereits vorhandene Dateien werden nicht ersetzt. Wiederherstellen verwendet zuerst `shareos.backup.restore` mit `apply:false`; erst die explizite Bestätigung spielt genau den geprüften Inhalt mit `apply:true` zurück. Danach Box manuell neu starten und erneut anmelden. Kein automatischer Neustart und kein Firmware-Update.
+- **Box discovery:** Detect local IPv4 addresses and network masks and search their networks automatically. Also check `shareos.local`, `192.168.0.32`, and the entered box address. An optional manual subnet is available in advanced search. HTTP/HTTPS URLs and custom ports are supported. Discovery identifies the ShareOS web application; it is not mDNS service discovery. A discovery result does not establish certificate trust. HTTP transmits credentials without encryption.
+- **Files:** Log in with `session.login`, then require `shareos.me.bind` before accessing files. No administrator role is assumed if user binding fails. Roots and permissions come from `shareos.files.roots`; listings use `shareos.files.list`. Transfers use short-lived, single-use tickets from `shareos.files.ticket` and `/cgi-bin/files`. Transfers run in the background and do not intentionally overwrite existing files. The view refreshes after login, uploads, and folder creation. Sessions may require a new login after one hour.
+- **Network drives:** Available personal SMB folders and authorized shares come from `shareos.me.bind` or `shareos.me.get`, including read permissions. Manual entry remains available. Windows uses `net.exe use`, macOS uses `open smb://…`, and Linux uses `xdg-open smb://…` with `gio open` as a fallback. SMB authentication belongs to the operating system and is separate from the desktop web session. On Windows, save suitable credentials in Credential Manager first. Test connections and permissions on each target OS.
+- **File backup:** Recursively back up selected personal folders and shared folders locally, including hidden files. The NAS checks user permissions on every call. Only complete runs become visible as `snapshot-*`; failures discard incomplete runs. Truncated directory listings (more than 2,000 entries) cause the backup to stop. Links and special files are skipped and counted. Files are read sequentially, so changes during backup are possible: this is not an atomic NAS snapshot. Empty folders, POSIX permissions, and ACLs are not restored. Backup data is stored unencrypted; use an encrypted drive if required.
+- **File restoration:** Select a snapshot, choose a separate local output folder, and restore individual files. SHA-256 and file size are verified; existing files are rejected. Restored files use their original names. Use separate output folders for identically named files from different NAS folders. Upload restored files through the file browser if needed, subject to current write permissions.
+- **Box settings:** Available only to confirmed administrators. `shareos.backup.export` produces the settings backup, optionally encrypted by the NAS with a password. A native save dialog suggests the NAS filename. The password must be empty or at least six characters long. Existing files are not replaced. Restoration first previews `shareos.backup.restore` with `apply:false`; explicit confirmation applies exactly the checked content with `apply:true`. Restart the box manually afterward and log in again. This does not update firmware or restart the NAS automatically.
 
-Für Dateibackups mit dem normalen Benutzer anmelden: Die aktuelle Firmware liefert Administratoren unter `shareos.files.roots` ganze Laufwerke statt nur persönlicher Ordner und Freigaben. Deshalb ist bei Administratorkonten zunächst nichts ausgewählt und die Oberfläche weist auf den größeren Umfang hin.
+Use a regular user account for personal file backups. The current firmware exposes entire drives through `shareos.files.roots` for administrators, rather than only personal folders and shares. Administrator accounts therefore start with nothing selected and receive a scope notice.
 
-Anmeldepasswörter und Sitzungstokens der Desktop-App werden nicht auf Platte gespeichert. Optional werden nur die Box-Adresse und das ausdrücklich bestätigte öffentliche Zertifikat gespeichert. Einmaltickets werden nur an denselben Ursprung geschickt; HTTP-Weiterleitungen sind deaktiviert. Für ausdrücklich bestätigte Box-Zertifikate wird das exakte Zertifikat bei jeder TLS-Verbindung geprüft; ein anderes Zertifikat wird abgewiesen. Auf Unix erhalten lokale Sicherungsdateien Modus 0600 und neue Sicherungsstände Modus 0700; auf Windows gelten die geerbten Benutzer-ACLs. Ein lokaler Sicherungsstand ist kein Ersatz für eine getrennte Sicherung auf einem weiteren Datenträger.
+## File browser
 
-## Stand der Prüfung
+The sidebar lists personal files and shared folders, including read-only status. Breadcrumbs, parent-folder navigation, F5 refresh, folder search, hidden-file visibility, and sorting by name, size, or modification time are supported. Folders remain at the top. Entries display file icons, type, KiB/MiB/GiB sizes, relative modification times, and an entry count.
 
-42 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
+Uploads and downloads use native file dialogs and report processed bytes. Success is reported only after the NAS response or complete local write. Upload progress reaching 100% means the HTTP client has read all bytes; server confirmation follows. Existing files remain protected even if a save dialog offers to overwrite them.
 
-Noch nicht enthalten: geplante Backups, inkrementelle Speicherung, automatische Aufbewahrung, Windows-/macOS-Installer und Signierung. Für Linux liegt ein lokales Installationsskript bei. Upload und Download verwenden native Dateidialoge. Die Box-Einstellungen verwenden ebenfalls Dateidialoge. Der Dateibackup-Bereich verwendet weiterhin Pfadeingabefelder. Unter Linux benötigen die Dialoge einen laufenden `xdg-desktop-portal`-Dienst mit passendem Desktop-Backend (beispielsweise KDE oder GTK).
+Checkboxes select individual entries or all visible entries. The toolbar and context menu offer copy, paste, rename, and delete. New file creates an empty file; new folder creates a directory. Rename requires exactly one selected entry. Write actions are disabled for read-only roots and additionally checked by the NAS.
 
-## Verbindliche Grundlagen
+Copy stores the selection in an internal clipboard. Open the destination and paste. Within one root, copying uses `shareos.files.move` with `copy:true`. Across roots, the app plans the directory tree and stages each file through a protected local temporary file; local space for the largest file is required. Empty folders are preserved during copying, but POSIX metadata is not. Links and special files can only be copied within the same root. Existing destinations are rejected. A failed copy may leave created folders or copied files; these are not automatically deleted. The clipboard is bound to the box and user and cleared at logout.
 
-- [ShareOS-Dokumentation](https://github.com/UniqueDroid/ShareOS/tree/main/docs), insbesondere [BACKEND.md](https://github.com/UniqueDroid/ShareOS/blob/main/docs/BACKEND.md) für JSON-RPC, Anmeldung und Tests ohne Hardware.
-- [Aktuelle RPC-Implementierung](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/usr/share/rpcd/ucode/shareos.uc) für `shareos.me`, `shareos.files` und `shareos.backup`.
-- [RPC-Berechtigungen](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/usr/share/rpcd/acl.d/shareos.json) und [Dateitransfer-CGI](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/www/cgi-bin/files).
-- [Vorhandene Weboberfläche](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/www/app.js) als Referenz für tatsächliche Aufrufe und Wiederherstellungsvorschau.
+Deletion requires confirmation of the selected entries. The app sends `permanent:false`; NAS configuration determines whether its recycle bin is used or files are permanently removed. Deleting a folder includes its contents.
 
-Die Backend-Übersicht beschreibt noch einen früheren Funktionsumfang. Bei zusätzlichen Dateimethoden ist deshalb die aktuelle Implementierung maßgeblich. Es werden keine privaten NAS-Endpunkte zur Entwicklung benötigt oder abgefragt.
+## File Drop
 
-## HTTPS-Anmeldung mit dem Box-Zertifikat
+After login, drag local files into the Files view or click the File Drop field to select them. The app creates **File Drop** in your personal NAS home if needed, regardless of the folder currently being viewed. Conflicts receive suffixes such as ` (2)`; existing files are not overwritten. After upload, the browser opens the destination. Folder uploads are not supported. See [File Drop](docs/INSTALL.md#file-drop).
 
-ShareOS erzeugt beim ersten Start ein selbstsigniertes Zertifikat. Bei `UnknownIssuer`:
+On Linux, the current winit Wayland backend does not deliver file-drop events. The app therefore uses X11/XWayland automatically when `DISPLAY` is set. Without XWayland, click the field to choose files instead. The same click-to-select fallback is available on other platforms.
 
-1. HTTPS-Box-Adresse eingeben, beispielsweise `https://shareos.skynet.lan`.
-2. **HTTPS-Zertifikat prüfen** anklicken. Dieser Abruf sendet keine Zugangsdaten.
-3. Den angezeigten SHA-256-Fingerabdruck mit dem Zertifikat der Box vergleichen, etwa über die Zertifikatsanzeige im Browser.
-4. **Diesem Zertifikat für diese Sitzung vertrauen** anklicken und anschließend anmelden.
+## Backup sources and snapshots
 
-Die Bestätigung gilt nur für diese Box-Adresse einschließlich Port und das exakt angezeigte Zertifikat. Sie ersetzt für dieses Zertifikat auch die Namens- und Zeitprüfung, sodass der zusätzliche LAN-DNS-Name der Box verwendet werden kann. TLS-Handshakesignaturen bleiben geprüft. Es gibt keinen allgemeinen Schalter zum Abschalten der Zertifikatsprüfung für Anmeldungen. Ohne gespeichertes Zertifikatsvertrauen muss nach Abmeldung, Adresswechsel oder Neustart erneut bestätigt werden. Mit ausdrücklich gespeichertem Vertrauen wird das genaue Zertifikat beim nächsten App-Start wieder geladen. Systemweit vertraute Zertifikate benötigen diese Bestätigung nicht.
+The backup destination folder also acts as the default source of saved snapshots for restoration. Selecting it or completing a backup loads complete `snapshot-*` entries, sorted by date in UTC. A single snapshot folder can also be selected directly. Incomplete `.incomplete-*` entries are ignored; invalid `snapshot-*` entries are counted and skipped.
 
-## Darstellung und Linux-App-Icon
+Enable the alternative restore-source option to select another backup folder. Disabling it makes the source follow the backup destination again. Changing the source discards the previously loaded snapshot to avoid restoring from stale data.
 
-Die Oberfläche übernimmt die blauen Hell-/Dunkel-Paletten, Monospace-Schrift, Kopfzeile mit Navigation, Karten und abgerundeten Bedienelemente aus `shareos.css`. Oben rechts schaltet **Hell** / **Dunkel** den Modus um. Passend zum Modus wird das originale helle oder dunkle ShareOS-Logo angezeigt. Der Modus gilt für den aktuellen App-Start.
+The output folder for restored files is selected separately and is not changed when switching backup sources. Restoration continues to verify SHA-256 and reject existing local files.
 
-Für ein korrektes Symbol im Linux-Anwendungsmenü und unter Wayland:
+## HTTPS certificates and saved connections
+
+ShareOS generates a self-signed certificate on first startup. If login reports `UnknownIssuer`:
+
+1. Enter the HTTPS box address, such as `https://shareos.skynet.lan`.
+2. Click the certificate inspection button. This request sends no credentials.
+3. Compare the displayed SHA-256 fingerprint with the box certificate, for example using your browser's certificate viewer.
+4. Explicitly trust that certificate for the session, then log in.
+
+Trust is restricted to the exact certificate and box address, including its port. Explicit pinning replaces name and validity checks for that certificate, allowing an additional LAN DNS name; TLS handshake signatures are still verified. There is no general login option to disable certificate verification. Without saved trust, confirm again after logout, address changes, or restart. Explicitly saved trust is loaded at the next app startup. System-trusted certificates require no manual confirmation.
+
+The connection preferences can save the box address and optionally its confirmed public certificate. Select the desired options and save the connection settings. Forgetting the saved connection removes these values. A different certificate is rejected and must be inspected separately.
+
+`shareos-desktop/connection.json` is stored under `${XDG_CONFIG_HOME:-~/.config}` on Linux, `~/Library/Application Support` on macOS, and `%APPDATA%` on Windows. It contains no passwords or session tokens. New Unix configuration files use mode 0600 and the app configuration directory uses 0700.
+
+Login passwords and session tokens are never saved to disk. Transfer tickets are sent only to the same origin; HTTP redirects are disabled. Pinned certificates are checked on every TLS connection. Local Unix backup files use mode 0600 and new snapshots use 0700; Windows uses inherited user ACLs. A local snapshot does not replace a separate backup on another drive.
+
+## Embedded administrator terminal
+
+The Terminal section appears only for confirmed administrators. Connecting invokes `shareos.system.terminal`, obtains a ttyd authentication token, and connects with the `tty` WebSocket subprotocol. The terminal is embedded in the native app. Regular users cannot invoke it through the app; NAS ACLs also remain effective.
+
+The VT100 view supports colors, cursor movement, resizing, Unicode, arrow keys, Tab, Enter, Ctrl+C, and paste, including bracketed paste where required. Click the terminal to type. Scrollback is limited to 2,000 lines, and the visible screen can be copied. Paste uses the OS shortcut, usually Ctrl+Shift+V on Linux. Sixel and terminal mouse reporting are not implemented.
+
+Disconnecting, logging out, or closing the app closes the WebSocket session. Switching app sections leaves it running. Starting another terminal replaces an existing session according to the ShareOS implementation. HTTPS connections use system trust or the confirmed box certificate for the same host at the returned terminal port. The session path is neither stored nor intentionally logged.
+
+## Appearance and Linux desktop integration
+
+The app follows `shareos.css`: blue light/dark palettes, monospace text, header navigation, cards, and rounded controls. The top-right theme button switches modes and selects the matching original ShareOS logo for the current app session. Username, role, and box address appear beside the logo; logout is on the right. Login fields are hidden while signed in. Only box discovery is shown before login; the remaining sections appear afterward.
+
+To install the Linux menu entry and icon from an existing checkout:
 
 ```sh
 git pull --ff-only
 sh scripts/install-linux.sh
 ```
 
-Das Skript benötigt Cargo, Python 3 und die üblichen Build-Abhängigkeiten. Es baut die Release-Version und installiert sie ohne sudo nach `~/.local/bin`; Desktop-Eintrag und Original-ShareOS-Icon liegen unter `${XDG_DATA_HOME:-~/.local/share}`. Anschließend die laufende App schließen und **ShareOS Desktop** aus dem Anwendungsmenü starten. Desktop-ID und Wayland-App-ID lauten `de.shareos.desktop`. Das quadratische Original-Icon stammt wie die Logos aus dem ShareOS-Repository. Beim bloßen `cargo run` ohne installierten Desktop-Eintrag kann Wayland weiterhin ein generisches Symbol zeigen.
+The script requires Cargo, Python 3, and the build dependencies. It installs without sudo into `~/.local/bin`, with desktop files and the icon under `${XDG_DATA_HOME:-~/.local/share}`. Close the running app and launch ShareOS Desktop from the application menu. The desktop ID and Wayland app ID are `de.shareos.desktop`. Plain `cargo run` without an installed desktop entry may still display a generic icon under Wayland.
 
-Zusätzliche lokale Regressionstests verwenden einen echten TLS-Testserver mit selbstsigniertem Zertifikat: HTTPS-Suche, gesperrte Anmeldung ohne Vertrauen, erfolgreiche Anmeldung mit bestätigtem Zertifikat, Ablehnung eines abweichenden Zertifikats und Ursprungstrennung. Es erfolgt dabei kein Zugriff auf eine reale NAS.
+Linux native file dialogs require a running `xdg-desktop-portal` service with the appropriate desktop backend. Synchronous dialogs use rfd/ashpd/zbus with the `async-std`/`async-io` backend, so background threads do not require their own Tokio runtime.
 
-## Dateibrowser
+## Validation and limitations
 
-- Seitenleiste mit eigenen Dateien und freigegebenen Ordnern, einschließlich Nur-Lesen-Kennzeichnung.
-- Klickbare Pfadnavigation, eine Ebene nach oben und Aktualisieren mit F5.
-- Suche im aktuellen Ordner, versteckte Dateien ein-/ausblenden, Sortierung nach Name, Größe oder Änderung. Ordner stehen immer oben.
-- Dateiliste mit gezeichneten Ordner-/Dateisymbolen, Dateityp, KiB/MiB/GiB-Größen, relativen Änderungshinweisen und Eintragszahl.
-- **Hochladen …** öffnet die native Dateiauswahl, **Speichern …** den Speicherdialog. Bestehende Dateien werden weiterhin abgewiesen, auch wenn der Speicherdialog ein Überschreiben anbietet.
-- Uploads und Downloads zeigen die verarbeiteten Bytes; die Erfolgsmeldung erscheint erst nach der NAS-Antwort beziehungsweise dem vollständigen lokalen Schreiben. Beim Upload bedeutet 100 % zunächst, dass der HTTP-Client alle Bytes gelesen hat; die Serverbestätigung folgt anschließend.
-- **Neuer Ordner** ist bei Schreibrechten verfügbar. Nach Upload und Ordneranlage aktualisiert sich die Liste automatisch.
+The 42 Rust tests cover RPC failures, required user binding, administrator restrictions, truncated directory listings, backup checksums, overwrite protection, saved trust, discovery address calculation, and terminal protocol behavior. Local TLS tests check self-signed certificate discovery, blocked untrusted login, confirmed trust, certificate mismatch rejection, and origin separation. A local WebSocket server checks terminal input, output, and session closure. An isolated dialog test checks cancellation without Tokio or reachable desktop services.
 
-## Admin-Terminal
+Development and automated tests do not access a real NAS. APIs and permissions are derived from the ShareOS repository and tested with simulated responses. Native CI builds have succeeded on Linux, Windows, and both macOS architectures; this does not establish complete GUI or NAS integration coverage on every OS. Hardware testing takes place on the user's local network. `192.168.0.32` is a discovery candidate used by the locally running app.
 
-Nur bei bestätigter Administratorrolle erscheint **Terminal** als zusätzlicher Bereich. **Terminal verbinden** startet die vorhandene Methode `shareos.system.terminal`, holt den ttyd-Authentifizierungstoken und verbindet sich mit dessen WebSocket-Protokoll `tty`. Das Terminal wird direkt im nativen App-Fenster dargestellt; es öffnet sich kein Browser. Normale Benutzer können die Terminal-Methode nicht über die App starten; die NAS-ACLs bleiben ebenfalls wirksam.
+Not yet included: scheduled backups, incremental storage, automatic retention, Windows/macOS installers, Windows signing, or Apple developer signing and notarization. Linux has a local installation script.
 
-Die VT100-Ansicht unterstützt Farben, Cursorbewegungen, Größenänderungen, Unicode, Pfeiltasten, Tab, Enter, Strg+C und Einfügen (bei Bedarf mit dem Bracketed-Paste-Protokoll). Zum Tippen ins Terminal klicken. Scrollback ist auf 2000 Zeilen begrenzt, der sichtbare Bildschirm lässt sich kopieren. Einfügen verwendet die Betriebssystem-Tastenkombination, unter Linux üblicherweise Strg+Umschalt+V. Grafische Terminalprotokolle wie Sixel und Terminal-Maussteuerung sind nicht implementiert.
+Installer and packaging smoke tests, without downloads or real compilation:
 
-**Terminal beenden**, Abmelden und Schließen der App schließen die WebSocket-Sitzung. Ein Wechsel zu einem anderen App-Bereich lässt sie weiterlaufen. Eine neue Terminal-Sitzung ersetzt laut ShareOS-Implementierung eine vorhandene Sitzung. Bei HTTPS gelten der System-Zertifikatsspeicher beziehungsweise das bereits bestätigte Box-Zertifikat auch für die Terminal-Verbindung zum gleichen Host am von der Box gelieferten Port. Der Sitzungspfad wird weder gespeichert noch absichtlich ausgegeben.
+```sh
+python3 -m unittest discover -s tests -v
+```
 
-## Box-Adresse und Zertifikat merken
+## API references
 
-Unter **Box finden → Verbindung merken** können die Box-Adresse und optional das bestätigte Zertifikat gespeichert werden. Nach Auswahl auf **Verbindungseinstellungen speichern** klicken. **Gespeicherte Verbindung vergessen** entfernt die gespeicherten Werte. Ein anderes Zertifikat wird auch nach dem Speichern abgewiesen und muss separat geprüft werden.
+- [ShareOS documentation](https://github.com/UniqueDroid/ShareOS/tree/main/docs), especially [BACKEND.md](https://github.com/UniqueDroid/ShareOS/blob/main/docs/BACKEND.md) for JSON-RPC, authentication, and hardware-free testing.
+- [Current RPC implementation](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/usr/share/rpcd/ucode/shareos.uc) for `shareos.me`, `shareos.files`, and `shareos.backup`.
+- [RPC permissions](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/usr/share/rpcd/acl.d/shareos.json) and [file transfer CGI](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/www/cgi-bin/files).
+- [Existing web interface](https://github.com/UniqueDroid/ShareOS/blob/main/src/shareos-core/www/app.js) for actual calls and restore previews.
 
-Die Datei `shareos-desktop/connection.json` liegt unter Linux in `${XDG_CONFIG_HOME:-~/.config}`, unter macOS in `~/Library/Application Support` und unter Windows in `%APPDATA%`. Sie enthält keine Anmeldedaten. Auf Unix werden neue Konfigurationsdateien mit 0600 und der App-Konfigurationsordner mit 0700 angelegt.
-
-## Korrekturen anhand der Linux-Screenshots
-
-Die Ordnerauswahl ist ausdrücklich vertikal angeordnet, sodass sich eigene Dateien und Laufwerke nicht mehr überlagern. Benutzername, Rolle und Box-Adresse stehen beim Logo im Kopfbereich; Abmelden steht rechts. Eingabefelder haben gleichmäßige Höhe und Abstände. Bei bestehender Anmeldung werden die überflüssigen Passwortfelder ausgeblendet.
-
-Zusätzliche Tests prüfen Speichern der Einstellungen, Benutzerfreigaben, gespeichertes Zertifikatsvertrauen, vertikale Navigation und das ttyd-Protokoll mit einem lokalen WebSocket-Testserver einschließlich Eingaben, Ausgabe und Sitzungsende. Die reale NAS wird aus der Entwicklungsumgebung nicht angesprochen.
-
-## Automatische lokale Suche
-
-Ohne manuelle Subnetzvorgabe werden die IPv4-Adressen und Netzmasken der lokalen Netzwerkschnittstellen ausgelesen. Die Schnittstelle der Standardroute wird zuerst berücksichtigt; weitere LAN-Schnittstellen bleiben etwa bei aktivem VPN enthalten. Loopback, Link-Local sowie erkennbare Docker-/Veth-/Bridge-Schnittstellen werden ausgelassen. Die Ermittlung der Standardroute verwendet eine UDP-Routenauswahl ohne Paketversand.
-
-Bis /22 wird das erkannte Netz durchsucht. Größere Netze werden auf den /24-Adressbereich der jeweiligen eigenen IPv4-Adresse begrenzt, um keine sehr großen Netze vollständig zu scannen. Jeder Suchkandidat wird über HTTP und HTTPS geprüft. Die bekannte Box-Adresse und `shareos.local` bleiben auch bei fehlender IPv4-Erkennung als Suchziele enthalten. Die Suche wird ausschließlich durch den Benutzer in der lokal gestarteten App ausgelöst; Tests prüfen die Adressberechnung ohne Zugriff auf eine NAS.
-
-## Linux-Dateidialoge und Navigation
-
-Die synchronen XDG-Portal-Dateidialoge verwenden das `async-std`/`async-io`-Backend von rfd/ashpd/zbus. Dadurch benötigen die Hintergrundthreads der App keine eigene Tokio-Laufzeit. Ein isolierter Regressionstest ruft Dateiöffnung und Speicherdialog ohne Tokio, ohne erreichbaren D-Bus und ohne grafischen Fallback auf; fehlende Dienste führen dabei zu einem regulären Abbruch statt zum Reactor-Panic.
-
-Vor der Anmeldung ist ausschließlich **Box finden** sichtbar. Nach erfolgreicher Anmeldung werden die weiteren Bereiche eingeblendet. Das Terminal bleibt zusätzlich auf Administratoren beschränkt. Beim Abmelden wird die aktive Ansicht auf Box finden zurückgesetzt.
-
-## File Drop
-
-Im Bereich **Dateien** lokale Dateien in die App ziehen: Die App legt im eigenen NAS-Home bei Bedarf **File Drop** an und lädt die Dateien dort hoch. Das Ziel ist unabhängig vom aktuell geöffneten Ordner. Namenskonflikte erhalten einen Zusatz wie ` (2)`; bestehende Dateien werden nicht überschrieben. Nach erfolgreichem Upload zeigt der Dateibrowser den File-Drop-Ordner an. Ordner-Uploads sind nicht enthalten. Details: [File Drop](docs/INSTALL.md#file-drop).
-
-Installer-Smoke-Test (ohne Downloads und echte Builds): `python3 -m unittest discover -s tests -v`.
-
-## Datei- und Ordneraktionen
-
-Checkboxen wählen einzelne oder alle sichtbaren Einträge aus. Die Werkzeugleiste und das Rechtsklick-Menü bieten **Kopieren**, **Einfügen**, **Umbenennen** und **Löschen**. **Neue Datei** legt eine leere Datei an, **Neuer Ordner** eine Directory. Umbenennen erfordert genau einen ausgewählten Eintrag; Schreibaktionen sind bei Nur-Lesen-Ordnern deaktiviert und werden zusätzlich von der NAS geprüft.
-
-**Kopieren** übernimmt die Auswahl in die interne Zwischenablage. Danach den Zielordner öffnen und **Einfügen** wählen. Innerhalb eines Bereichs wird die NAS-Methode `shareos.files.move` mit `copy:true` verwendet. Zwischen verschiedenen Bereichen plant die App den vollständigen Verzeichnisbaum und überträgt Dateien über eine geschützte lokale temporäre Datei; dafür muss lokal Platz für die größte Datei verfügbar sein. Leere Ordner bleiben dabei erhalten, POSIX-Metadaten werden bei dieser Übertragung nicht übernommen. Verknüpfungen und Spezialdateien können nur innerhalb desselben Bereichs kopiert werden. Bestehende Ziele werden abgewiesen. Ein Fehler kann bereits angelegte Zielordner oder kopierte Dateien hinterlassen; es wird nicht automatisch gelöscht. Die Zwischenablage ist an Box und Benutzer gebunden und wird beim Abmelden geleert.
-
-**Löschen** erfordert eine Bestätigung mit der konkreten Auswahl. Die App sendet `permanent:false`; ob der NAS-Papierkorb benutzt wird oder endgültig gelöscht wird, entscheidet die Konfiguration der Box. Ordner werden einschließlich ihres Inhalts gelöscht.
-
-## Backup-Quelle und Sicherungsstände
-
-Der **Backup-Zielordner** wird automatisch auch als Quelle der Wiederherstellungsstände verwendet. Nach Auswahl über den Ordnerdialog oder nach einer neuen Sicherung lädt die App die vollständigen `snapshot-*`-Stände und bietet sie nach Datum sortiert an. Datumsangaben stehen in UTC. Ein direkt ausgewählter einzelner Snapshot-Ordner ist ebenfalls möglich. Unvollständige `.incomplete-*`-Stände werden ignoriert, ungültige `snapshot-*`-Stände gezählt und ausgelassen.
-
-Über **Abweichenden Backup-Ordner als Wiederherstellungsquelle verwenden** kann gezielt eine andere Quelle ausgewählt werden. Wird die Option wieder ausgeschaltet, folgt die Quelle erneut dem Backup-Ziel. Änderungen der Quelle verwerfen einen zuvor geladenen Stand, damit Dateien nicht versehentlich aus einer alten Quelle wiederhergestellt werden.
-
-Das **Ziel für wiederhergestellte Dateien** bleibt separat wählbar und wird durch einen Wechsel der Backup-Quelle nicht verändert. Einzeldatei-Wiederherstellung verwendet weiterhin SHA-256 und überschreibt keine vorhandenen lokalen Dateien.
-
-## Datei-Drop unter Linux / Wayland
-
-Das native Wayland-Backend der derzeit verwendeten winit-Version liefert keine Datei-Drop-Ereignisse. Deshalb nutzt ShareOS Desktop bei gesetztem `DISPLAY` automatisch das X11-Backend, unter einer Wayland-Sitzung also XWayland. So können Dateien aus dem Dateimanager an das App-Fenster übergeben werden. Die NAS-Uploadlogik und der Zielordner bleiben unverändert.
-
-Ist kein X11/XWayland verfügbar, kann die App weiterhin nativ unter Wayland starten. Dann **auf das File-Drop-Feld klicken** und eine oder mehrere Dateien auswählen. Die Dateiauswahl verwendet denselben Upload nach `Eigene Dateien / File Drop`. Auch auf anderen Plattformen ist das Feld zusätzlich anklickbar.
+The backend overview describes an older feature set. The current implementation is authoritative for additional file methods. Development does not require or query private NAS endpoints.

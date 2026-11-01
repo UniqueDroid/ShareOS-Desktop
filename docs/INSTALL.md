@@ -1,84 +1,82 @@
-# ShareOS Desktop installieren und testen
+# Install and test ShareOS Desktop
 
-ShareOS Desktop kann aus Rust-Quellcode gebaut oder als fertiges Paket aus den Releases heruntergeladen werden. Es gibt noch keinen signierten Windows-Installer. Die App verändert keine NAS-Firmware. Installation und Updates benötigen GitHub-Zugriff; der spätere NAS-Zugriff läuft direkt im eigenen Netzwerk.
+Build ShareOS Desktop from Rust source or download a prebuilt package from Releases. There is no signed Windows installer yet. The app does not modify NAS firmware. Installation and updates require access to GitHub; subsequent NAS connections take place directly on your local network.
 
-## Fertige Pakete
+## Prebuilt packages
 
-Unter **[Releases](https://github.com/UniqueDroid/ShareOS-Desktop/releases)** das passende Paket herunterladen und entpacken:
+Download and extract the appropriate archive from **[Releases](https://github.com/UniqueDroid/ShareOS-Desktop/releases)**. Filenames include the version, target architecture, and commit:
 
-- Linux x64: `x86_64-unknown-linux-gnu.tar.gz`
-- Windows x64: `x86_64-pc-windows-msvc.zip`
-- macOS Apple Silicon: `aarch64-apple-darwin.zip`
-- macOS Intel: `x86_64-apple-darwin.zip`
+- Linux x64: target `x86_64-unknown-linux-gnu`, `.tar.gz` archive.
+- Windows x64: target `x86_64-pc-windows-msvc`, `.zip` archive.
+- macOS Apple Silicon: target `aarch64-apple-darwin`, `.zip` archive.
+- macOS Intel: target `x86_64-apple-darwin`, `.zip` archive.
 
-Die Dateinamen enthalten zusätzlich Version und Commit. Neben jedem Archiv liegt eine SHA-256-Prüfsumme. Das Paket enthält das Programm, `STARTEN.txt`, Build-Informationen, Lizenz und Icon.
+Each archive has a matching SHA-256 checksum file. Packages contain the program, `START-HERE.txt`, build information, license, and icon. Older packages may call the instructions file `STARTEN.txt`.
 
-**Windows:** `shareos-desktop.exe` starten. Rust und Visual Studio sind für diesen fertigen Build nicht nötig.
+**Windows:** Launch `shareos-desktop.exe`. Rust and Visual Studio are not required for a prebuilt package. Windows binaries are unsigned.
 
-**Linux:** `shareos-desktop` ausführbar machen und starten:
+**Linux:** Make the executable runnable and launch it:
 
 ```sh
 chmod +x shareos-desktop
 ./shareos-desktop
 ```
 
-Die üblichen X11/Wayland/OpenGL-Laufzeitbibliotheken des Systems werden weiterhin benötigt. Für den Anwendungsmenü-Eintrag kann alternativ der unten beschriebene curl-Installer verwendet werden.
+The usual X11/Wayland/OpenGL runtime libraries are required. To install an application menu entry, you can use the source installer below instead.
 
-**macOS:** `ShareOS Desktop.app` nach Programme kopieren und starten. Die App ist ad-hoc signiert, aber nicht mit einem Apple-Entwicklerzertifikat signiert oder notarisiert; macOS kann deshalb eine Sicherheitsmeldung anzeigen. Build-Ziel ist macOS 11 oder neuer; ein erfolgreicher Build ersetzt keine Prüfung der Bedienung auf jeder macOS-Version.
+**macOS:** Copy `ShareOS Desktop.app` to Applications and launch it. The app is ad-hoc signed, without an Apple developer signature or notarization, so macOS may display a security notice. The deployment target is macOS 11 or later. A successful build does not establish full GUI or NAS integration coverage on every OS version.
 
-Windows-Pakete sind nicht signiert. Ein erfolgreicher Build ersetzt keine Prüfung der Verbindung und Bedienung an der eigenen Box.
+## Linux: installation with curl
 
-## Linux: Installation per curl
+Requirements: `curl`, Git, Python 3, a C compiler, `pkg-config`, and your desktop's X11/Wayland/OpenGL runtime libraries. Native file dialogs require `xdg-desktop-portal` and the matching desktop backend. SMB access requires, for example, `kio-extras` for KDE or GVfs-SMB for GNOME and similar desktops.
 
-Benötigt werden `curl`, Git, Python 3, ein C-Compiler, `pkg-config` sowie die X11/Wayland/OpenGL-Laufzeitbibliotheken des Desktops. Native Dateidialoge benötigen `xdg-desktop-portal` und das passende Desktop-Backend. Für SMB benötigt KDE beispielsweise `kio-extras`, GNOME und ähnliche Desktops GVfs-SMB.
-
-Debian/Ubuntu, grundlegende Build-Abhängigkeiten:
+Basic build dependencies on Debian/Ubuntu:
 
 ```sh
 sudo apt update
 sudo apt install curl git python3 build-essential pkg-config libx11-dev libxi-dev libxkbcommon-dev libgl1-mesa-dev
 ```
 
-Auf anderen Distributionen die entsprechenden Pakete installieren. Anschließend als normaler Benutzer:
+On other distributions, install the equivalent packages. Then run as your regular user:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/UniqueDroid/ShareOS-Desktop/main/scripts/install.sh | sh
 ```
 
-Alternativ erst herunterladen und anschließend ausführen:
+Alternatively, download the script before running it:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/UniqueDroid/ShareOS-Desktop/main/scripts/install.sh -o /tmp/shareos-desktop-install.sh
 sh /tmp/shareos-desktop-install.sh
 ```
 
-Der Installer lädt den aktuellen Stand von `main` in ein temporäres Verzeichnis. Falls Rust/Cargo fehlen, installiert er die offizielle Rust-Werkzeugkette mit rustup im Benutzerkonto. Danach baut er die Release-Version und installiert die App, das Logo und den Menüeintrag ohne sudo:
+The installer downloads the current `main` source into a temporary directory. If Rust/Cargo is missing, it installs the official toolchain with rustup for your user account. It then builds the release executable and installs the app, logo, and menu entry without sudo:
 
-- Programm: `~/.local/bin/shareos-desktop`
-- Menüeintrag: `${XDG_DATA_HOME:-~/.local/share}/applications/de.shareos.desktop.desktop`
+- Executable: `~/.local/bin/shareos-desktop`
+- Menu entry: `${XDG_DATA_HOME:-~/.local/share}/applications/de.shareos.desktop.desktop`
 - Icon: `${XDG_DATA_HOME:-~/.local/share}/icons/hicolor/512x512/apps/de.shareos.desktop.png`
-- Build-Cache für spätere Updates: `${XDG_CACHE_HOME:-~/.cache}/shareos-desktop/target`
+- Build cache for updates: `${XDG_CACHE_HOME:-~/.cache}/shareos-desktop/target`
 
-Der erste Build kann einige Minuten dauern. Ein bestehendes Projektverzeichnis wird nicht verändert. Danach **ShareOS Desktop** im Anwendungsmenü starten. Alternativ `~/.local/bin/shareos-desktop` aufrufen. Die App vor einem Update schließen; zum Aktualisieren denselben curl-Befehl erneut ausführen.
+The first build may take several minutes. Existing project directories are left untouched. Launch ShareOS Desktop from the application menu or run `~/.local/bin/shareos-desktop`. Close the app before updating; run the same curl command again to update.
 
-Wer das Repository bereits lokal hat, kann weiterhin installieren mit:
+From an existing repository checkout:
 
 ```sh
 git pull --ff-only
 sh scripts/install-linux.sh
 ```
 
-## Windows: lokal testen (Windows x64)
+## Windows: build and test locally (x64)
 
-1. **Git für Windows** und **Rust mit rustup** installieren, beispielsweise in PowerShell:
+1. Install **Git for Windows** and **Rust with rustup**, for example in PowerShell:
 
    ```powershell
    winget install --id Git.Git --exact
    winget install --id Rustlang.Rustup --exact
    ```
 
-2. Die **Visual Studio 2022 Build Tools** installieren. Im Visual Studio Installer die Workload **Desktopentwicklung mit C++** einschließlich MSVC und Windows SDK auswählen. Diese Werkzeuge sind zusätzlich zu Rust notwendig; WSL allein erzeugt keine native Windows-App.
-3. PowerShell nach der Installation neu öffnen und prüfen:
+2. Install **Visual Studio 2022 Build Tools**. In Visual Studio Installer, select **Desktop development with C++**, including MSVC and the Windows SDK. These tools are required in addition to Rust. WSL alone does not produce the native Windows application.
+3. Open a new PowerShell window and check:
 
    ```powershell
    git --version
@@ -86,7 +84,7 @@ sh scripts/install-linux.sh
    rustc --version
    ```
 
-4. Projekt laden und starten:
+4. Clone and run the project:
 
    ```powershell
    git clone https://github.com/UniqueDroid/ShareOS-Desktop.git
@@ -94,9 +92,9 @@ sh scripts/install-linux.sh
    cargo run --locked
    ```
 
-Bei `link.exe not found` die C++-Workload samt Windows SDK nachinstallieren und die **Developer PowerShell for VS 2022** verwenden. Bei fehlendem `cargo` PowerShell neu starten; notfalls `& "$env:USERPROFILE\.cargo\bin\cargo.exe" run --locked` aufrufen.
+If `link.exe` is missing, install the C++ workload and Windows SDK, then use **Developer PowerShell for VS 2022**. If `cargo` is missing, restart PowerShell or run `& "$env:USERPROFILE\.cargo\bin\cargo.exe" run --locked`.
 
-Für eine ausführbare Release-Datei:
+To test and build a release executable:
 
 ```powershell
 cargo test --locked
@@ -104,18 +102,18 @@ cargo build --release --locked
 .\target\release\shareos-desktop.exe
 ```
 
-Die native `.exe` entsteht unter `target\release`. Die Anleitung beschreibt den Windows-Test; die Entwicklung und die bisherige Build-Prüfung erfolgten unter Linux. Ein nativer Windows-Build wurde hier noch nicht ausgeführt.
+The native executable is written to `target\release`. A native Windows CI build has passed, but testing on your own box is still needed.
 
-### Sinnvolle Tests an der eigenen Box
+### Suggested checks on your box
 
-- Box automatisch finden, mit einem normalen Benutzer anmelden und dessen Dateien/Freigaben prüfen.
-- Zertifikat-Fingerabdruck vor dem erstmaligen Bestätigen mit der Box vergleichen.
-- Eine kleine Testdatei hochladen und wieder herunterladen.
-- Unter **Dateien** eine Datei aus dem Explorer in das App-Fenster ziehen. Sie muss unter **Eigene Dateien / File Drop** auftauchen. Erneutes Ablegen derselben Datei erzeugt beispielsweise `Name (2).txt`.
-- Netzlaufwerk mit einem freien Buchstaben verbinden. Windows verwendet seine eigene SMB-Anmeldung; Zugangsdaten gegebenenfalls zuerst in der Windows-Anmeldeinformationsverwaltung hinterlegen.
-- Als Administrator das eingebettete Terminal und den Export der Box-Einstellungen prüfen.
+- Discover the box automatically, log in as a regular user, and check personal files and authorized shares.
+- Compare the certificate fingerprint with the box before trusting it for the first time.
+- Upload and download a small test file.
+- In the Files section, drag a file from Explorer into the app. It should appear in your personal NAS home under `File Drop`. Dropping it again should produce a name such as `Name (2).txt`.
+- Connect a network drive using an unused drive letter. Windows uses its own SMB authentication; save credentials in Windows Credential Manager if needed.
+- As an administrator, check the embedded terminal and settings backup export.
 
-Updates im vorhandenen Checkout:
+To update an existing checkout:
 
 ```powershell
 git pull --ff-only
@@ -124,8 +122,8 @@ cargo run --locked
 
 ## File Drop
 
-File Drop ist im Bereich **Dateien** nach der Anmeldung verfügbar. Einzelne lokale Dateien oder mehrere ausgewählte Dateien aus Explorer, Dolphin oder einem anderen Dateimanager in das App-Fenster ziehen. Ziel ist immer der eigene Home-Ordner auf der NAS, unabhängig vom aktuell angezeigten Ordner. Falls nötig wird dort `File Drop` angelegt.
+File Drop is available in the Files section after login. Drag one or more local files from Explorer, Dolphin, or another file manager into the app. The destination is always your personal NAS home, regardless of the currently displayed folder. A `File Drop` folder is created there if necessary. You can also click the File Drop field to select files.
 
-Vorhandene Dateien bleiben erhalten; Namenskonflikte werden mit Zusätzen wie ` (2)` aufgelöst. Der NAS-Upload verwendet weiterhin `overwrite:false`. Pro Datei gemeldete Fehler werden im Ergebnis angezeigt. Ohne beschreibbaren eigenen NAS-Ordner gibt es keine Ausweichablage in einer Freigabe. Ein bestehender Eintrag namens `File Drop`, der keine reguläre Directory ist, wird nicht ersetzt. Ordner und Browser-Links werden nicht hochgeladen. Während eine andere Aufgabe läuft, deren Abschluss abwarten und danach erneut ablegen.
+Existing files are preserved. Conflicts receive suffixes such as ` (2)`, and uploads use `overwrite:false`. Per-file errors are included in the result. If your personal NAS folder is not writable, the app does not fall back to another share. An existing `File Drop` entry that is not a regular directory is not replaced. Folders and browser links are not uploaded. Wait for any running task to finish before dropping more files.
 
-Unter Linux mit Wayland verwendet die App für Datei-Drops automatisch XWayland, sofern `DISPLAY` vorhanden ist. Auf reinen Wayland-Systemen ohne XWayland das File-Drop-Feld anklicken und Dateien auswählen.
+On Linux with Wayland, the app uses XWayland for file drops when `DISPLAY` is available. On Wayland-only systems without XWayland, click the File Drop field to select files instead.
