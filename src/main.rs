@@ -514,14 +514,6 @@ impl App {
             .any(|root| root.name == self.root && !root.ro);
         let home_available = self.roots.iter().any(|root| root.home && !root.ro);
         let hovering = ctx.input(|input| !input.raw.hovered_files.is_empty());
-        egui::Frame::new().fill(if hovering {p.hover}else{p.bg})
-            .stroke(egui::Stroke::new(1.0_f32,if hovering {p.accent}else{p.line}))
-            .corner_radius(10).inner_margin(16).show(ui,|ui| {
-                ui.set_min_width((ui.available_width()-32.0).max(0.0));
-                ui.label(egui::RichText::new("FILE DROP").strong().color(p.accent));
-                ui.label(if home_available {"Dateien hierher ziehen → Eigene Dateien / File Drop"}else{"File Drop benötigt einen eigenen beschreibbaren NAS-Ordner."});
-                ui.small("Der Ordner wird bei Bedarf angelegt. Bestehende Dateien werden nicht überschrieben.");
-            });
         let mut navigate = None;
         let mut download = None;
         let mut upload = false;
@@ -543,6 +535,19 @@ impl App {
                     }
                     if root.ro { ui.label(egui::RichText::new("nur lesen").small().color(p.muted)); }
                 }
+                ui.add_space(4.0);
+                let (drop_rect,drop_response)=ui.allocate_exact_size(egui::vec2(175.0,175.0),egui::Sense::hover());
+                let painter=ui.painter_at(drop_rect);
+                painter.rect_filled(drop_rect,8,if hovering && home_available {p.hover}else{p.bg});
+                painter.rect_stroke(drop_rect,8,egui::Stroke::new(1.0_f32,if hovering && home_available {p.accent}else{p.line}),egui::StrokeKind::Inside);
+                let color=if home_available {p.accent}else{p.muted};
+                let center=drop_rect.center();
+                painter.text(egui::pos2(center.x,drop_rect.top()+24.0),egui::Align2::CENTER_CENTER,"FILE DROP",egui::FontId::monospace(13.0),color);
+                painter.line_segment([center-egui::vec2(0.0,18.0),center+egui::vec2(0.0,14.0)],egui::Stroke::new(2.0_f32,color));
+                for x in [-10.0,10.0] {painter.line_segment([center+egui::vec2(x,4.0),center+egui::vec2(0.0,14.0)],egui::Stroke::new(2.0_f32,color));}
+                painter.line_segment([center+egui::vec2(-24.0,24.0),center+egui::vec2(24.0,24.0)],egui::Stroke::new(2.0_f32,color));
+                painter.text(egui::pos2(center.x,drop_rect.bottom()-24.0),egui::Align2::CENTER_CENTER,if home_available {"Dateien ablegen"}else{"Kein NAS-Home"},egui::FontId::monospace(12.0),p.muted);
+                drop_response.on_hover_text(if home_available {"Dateien hierher ziehen → Eigene Dateien / File Drop. Der Ordner wird bei Bedarf angelegt; vorhandene Dateien bleiben erhalten."}else{"File Drop benötigt einen eigenen beschreibbaren NAS-Ordner."});
             });});
             ui.add_space(6.0);
             ui.vertical(|ui| {
@@ -1359,81 +1364,105 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.set_max_width(1240.0);
-                ui.horizontal(|ui| {
-                    let logo = if self.dark {
-                        &self.logo_dark
-                    } else {
-                        &self.logo_light
-                    };
-                    ui.add(egui::Image::new(logo).max_height(72.0).max_width(210.0));
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new("DESKTOP")
-                                .size(22.0)
-                                .strong()
-                                .color(p.accent),
-                        );
-                        ui.label(
-                            egui::RichText::new(concat!("Version · ", env!("CARGO_PKG_VERSION")))
-                                .size(13.0)
-                                .color(p.muted),
-                        );
-                        if let Some(nas) = &self.nas {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} · {}",
-                                    nas.user,
-                                    if nas.admin {
-                                        "Administrator"
-                                    } else {
-                                        "Benutzer"
-                                    }
-                                ))
-                                .size(12.0)
-                                .color(p.muted),
-                            );
-                            ui.label(
-                                egui::RichText::new(nas.base.as_str())
-                                    .size(12.0)
+                let actions_width = if self.nas.is_some() { 216.0 } else { 100.0 };
+                let brand_width =
+                    (ui.available_width() - actions_width - ui.spacing().item_spacing.x).max(120.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 72.0),
+                    egui::Layout::left_to_right(egui::Align::BOTTOM),
+                    |ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(brand_width, 72.0),
+                            egui::Layout::left_to_right(egui::Align::BOTTOM),
+                            |ui| {
+                                let logo = if self.dark {
+                                    &self.logo_dark
+                                } else {
+                                    &self.logo_light
+                                };
+                                ui.add(
+                                    egui::Image::new(logo)
+                                        .fit_to_exact_size(egui::vec2(72.0 * 421.0 / 266.0, 72.0)),
+                                );
+                                ui.label(
+                                    egui::RichText::new("DESKTOP")
+                                        .size(22.0)
+                                        .strong()
+                                        .color(p.accent),
+                                );
+                                ui.label(
+                                    egui::RichText::new(concat!(
+                                        "Version · ",
+                                        env!("CARGO_PKG_VERSION")
+                                    ))
+                                    .size(13.0)
                                     .color(p.muted),
-                            );
-                        }
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(nas) = self.nas.clone() {
+                                );
+                                if let Some(nas) = &self.nas {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "{} · {}",
+                                                nas.user,
+                                                if nas.admin {
+                                                    "Administrator"
+                                                } else {
+                                                    "Benutzer"
+                                                }
+                                            ))
+                                            .size(12.0)
+                                            .color(p.muted),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(nas.base.as_str())
+                                                .size(12.0)
+                                                .color(p.muted),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(nas.base.as_str());
+                                }
+                            },
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                            if let Some(nas) = self.nas.clone() {
+                                if ui
+                                    .add_enabled(self.job.is_none(), egui::Button::new("Abmelden"))
+                                    .clicked()
+                                {
+                                    self.file_selection.clear();
+                                    self.file_clipboard = None;
+                                    self.file_dialog = None;
+                                    self.terminal = None;
+                                    self.nas = None;
+                                    self.trusted_certificate = None;
+                                    self.certificate = None;
+                                    self.roots.clear();
+                                    self.entries.clear();
+                                    self.preview = None;
+                                    self.password.clear();
+                                    self.settings_password.clear();
+                                    self.start(ctx, move || {
+                                        let _ = nas.logout();
+                                        Ok(Change::Logout)
+                                    });
+                                }
+                            }
+                            let next = if self.dark { "Hell" } else { "Dunkel" };
                             if ui
-                                .add_enabled(self.job.is_none(), egui::Button::new("Abmelden"))
+                                .button(next)
+                                .on_hover_text("Hell/Dunkel umschalten")
                                 .clicked()
                             {
-                                self.file_selection.clear();
-                                self.file_clipboard = None;
-                                self.file_dialog = None;
-                                self.terminal = None;
-                                self.nas = None;
-                                self.trusted_certificate = None;
-                                self.certificate = None;
-                                self.roots.clear();
-                                self.entries.clear();
-                                self.preview = None;
-                                self.password.clear();
-                                self.settings_password.clear();
-                                self.start(ctx, move || {
-                                    let _ = nas.logout();
-                                    Ok(Change::Logout)
-                                });
+                                self.dark = !self.dark;
+                                theme::apply(ctx, self.dark);
                             }
-                        }
-                        let next = if self.dark { "Hell" } else { "Dunkel" };
-                        if ui
-                            .button(next)
-                            .on_hover_text("Hell/Dunkel umschalten")
-                            .clicked()
-                        {
-                            self.dark = !self.dark;
-                            theme::apply(ctx, self.dark);
-                        }
-                    });
-                });
+                        });
+                    },
+                );
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
