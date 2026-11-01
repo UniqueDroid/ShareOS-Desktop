@@ -1,6 +1,6 @@
 # ShareOS Desktop
 
-Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 41 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
+Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 42 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
 
 ## Schnell installieren und unter Windows testen
 
@@ -39,7 +39,7 @@ Anmeldepasswörter und Sitzungstokens der Desktop-App werden nicht auf Platte ge
 
 ## Stand der Prüfung
 
-41 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
+42 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
 
 Noch nicht enthalten: geplante Backups, inkrementelle Speicherung, automatische Aufbewahrung, Windows-/macOS-Installer und Signierung. Für Linux liegt ein lokales Installationsskript bei. Upload und Download verwenden native Dateidialoge. Die Box-Einstellungen verwenden ebenfalls Dateidialoge. Der Dateibackup-Bereich verwendet weiterhin Pfadeingabefelder. Unter Linux benötigen die Dialoge einen laufenden `xdg-desktop-portal`-Dienst mit passendem Desktop-Backend (beispielsweise KDE oder GTK).
 
@@ -141,3 +141,9 @@ Der **Backup-Zielordner** wird automatisch auch als Quelle der Wiederherstellung
 Über **Abweichenden Backup-Ordner als Wiederherstellungsquelle verwenden** kann gezielt eine andere Quelle ausgewählt werden. Wird die Option wieder ausgeschaltet, folgt die Quelle erneut dem Backup-Ziel. Änderungen der Quelle verwerfen einen zuvor geladenen Stand, damit Dateien nicht versehentlich aus einer alten Quelle wiederhergestellt werden.
 
 Das **Ziel für wiederhergestellte Dateien** bleibt separat wählbar und wird durch einen Wechsel der Backup-Quelle nicht verändert. Einzeldatei-Wiederherstellung verwendet weiterhin SHA-256 und überschreibt keine vorhandenen lokalen Dateien.
+
+## Datei-Drop unter Linux / Wayland
+
+Das native Wayland-Backend der derzeit verwendeten winit-Version liefert keine Datei-Drop-Ereignisse. Deshalb nutzt ShareOS Desktop bei gesetztem `DISPLAY` automatisch das X11-Backend, unter einer Wayland-Sitzung also XWayland. So können Dateien aus dem Dateimanager an das App-Fenster übergeben werden. Die NAS-Uploadlogik und der Zielordner bleiben unverändert.
+
+Ist kein X11/XWayland verfügbar, kann die App weiterhin nativ unter Wayland starten. Dann **auf das File-Drop-Feld klicken** und eine oder mehrere Dateien auswählen. Die Dateiauswahl verwendet denselben Upload nach `Eigene Dateien / File Drop`. Auch auf anderen Plattformen ist das Feld zusätzlich anklickbar.

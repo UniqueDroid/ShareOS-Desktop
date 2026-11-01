@@ -4,6 +4,7 @@ mod browser;
 mod drives;
 mod file_drop;
 mod file_ops;
+mod linux_window;
 mod nas;
 mod preferences;
 mod terminal;
@@ -520,6 +521,7 @@ impl App {
         let mut mkdir = false;
         let mut create_file = false;
         let mut action = None;
+        let mut pick_drop = false;
         ui.horizontal_top(|ui| {
             egui::Frame::new().fill(p.bg).corner_radius(10).inner_margin(12).show(ui, |ui| {ui.vertical(|ui| {
                 ui.set_width(175.0);
@@ -536,7 +538,7 @@ impl App {
                     if root.ro { ui.label(egui::RichText::new("nur lesen").small().color(p.muted)); }
                 }
                 ui.add_space(4.0);
-                let (drop_rect,drop_response)=ui.allocate_exact_size(egui::vec2(175.0,175.0),egui::Sense::hover());
+                let (drop_rect,drop_response)=ui.allocate_exact_size(egui::vec2(175.0,175.0),if home_available {egui::Sense::click()}else{egui::Sense::hover()});
                 let painter=ui.painter_at(drop_rect);
                 painter.rect_filled(drop_rect,8,if hovering && home_available {p.hover}else{p.bg});
                 painter.rect_stroke(drop_rect,8,egui::Stroke::new(1.0_f32,if hovering && home_available {p.accent}else{p.line}),egui::StrokeKind::Inside);
@@ -546,8 +548,9 @@ impl App {
                 painter.line_segment([center-egui::vec2(0.0,18.0),center+egui::vec2(0.0,14.0)],egui::Stroke::new(2.0_f32,color));
                 for x in [-10.0,10.0] {painter.line_segment([center+egui::vec2(x,4.0),center+egui::vec2(0.0,14.0)],egui::Stroke::new(2.0_f32,color));}
                 painter.line_segment([center+egui::vec2(-24.0,24.0),center+egui::vec2(24.0,24.0)],egui::Stroke::new(2.0_f32,color));
-                painter.text(egui::pos2(center.x,drop_rect.bottom()-24.0),egui::Align2::CENTER_CENTER,if home_available {"Dateien ablegen"}else{"Kein NAS-Home"},egui::FontId::monospace(12.0),p.muted);
-                drop_response.on_hover_text(if home_available {"Dateien hierher ziehen → Eigene Dateien / File Drop. Der Ordner wird bei Bedarf angelegt; vorhandene Dateien bleiben erhalten."}else{"File Drop benötigt einen eigenen beschreibbaren NAS-Ordner."});
+                painter.text(egui::pos2(center.x,drop_rect.bottom()-24.0),egui::Align2::CENTER_CENTER,if home_available {"Ablegen oder klicken"}else{"Kein NAS-Home"},egui::FontId::monospace(12.0),p.muted);
+                if home_available {pick_drop=drop_response.clicked();}
+                drop_response.on_hover_cursor(if home_available {egui::CursorIcon::PointingHand}else{egui::CursorIcon::Default}).on_hover_text(if home_available {"Dateien hierher ziehen oder zum Auswählen klicken → Eigene Dateien / File Drop. Vorhandene Dateien bleiben erhalten."}else{"File Drop benötigt einen eigenen beschreibbaren NAS-Ordner."});
             });});
             ui.add_space(6.0);
             ui.vertical(|ui| {
@@ -648,6 +651,18 @@ impl App {
                 ui.small("Dateien werden mit den Rechten deiner Anmeldung übertragen. Bestehende Dateien bleiben erhalten.");
             });
         });
+        if pick_drop {
+            self.start(ctx, move || {
+                let Some(paths) = rfd::FileDialog::new()
+                    .set_title("File Drop: Dateien ins eigene NAS-Home hochladen")
+                    .pick_files()
+                else {
+                    return Ok(Change::Message("File Drop abgebrochen.".into()));
+                };
+                Ok(Change::FileDrop(file_drop::upload(&nas, paths)?))
+            });
+            return;
+        }
         if let Some((root, path)) = navigate {
             self.root = root;
             self.path = path;
@@ -1566,15 +1581,18 @@ fn main() -> eframe::Result {
         height: image.height(),
         rgba: image.into_raw(),
     };
+    let mut options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_app_id("de.shareos.desktop")
+            .with_drag_and_drop(true)
+            .with_inner_size([1060.0, 740.0])
+            .with_icon(icon),
+        ..Default::default()
+    };
+    linux_window::configure(&mut options);
     eframe::run_native(
         "ShareOS Desktop",
-        eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_app_id("de.shareos.desktop")
-                .with_inner_size([1060.0, 740.0])
-                .with_icon(icon),
-            ..Default::default()
-        },
+        options,
         Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
     )
 }

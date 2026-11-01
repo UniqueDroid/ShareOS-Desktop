@@ -101,3 +101,5 @@ cargo run --locked
 File Drop ist im Bereich **Dateien** nach der Anmeldung verfügbar. Einzelne lokale Dateien oder mehrere ausgewählte Dateien aus Explorer, Dolphin oder einem anderen Dateimanager in das App-Fenster ziehen. Ziel ist immer der eigene Home-Ordner auf der NAS, unabhängig vom aktuell angezeigten Ordner. Falls nötig wird dort `File Drop` angelegt.
 
 Vorhandene Dateien bleiben erhalten; Namenskonflikte werden mit Zusätzen wie ` (2)` aufgelöst. Der NAS-Upload verwendet weiterhin `overwrite:false`. Pro Datei gemeldete Fehler werden im Ergebnis angezeigt. Ohne beschreibbaren eigenen NAS-Ordner gibt es keine Ausweichablage in einer Freigabe. Ein bestehender Eintrag namens `File Drop`, der keine reguläre Directory ist, wird nicht ersetzt. Ordner und Browser-Links werden nicht hochgeladen. Während eine andere Aufgabe läuft, deren Abschluss abwarten und danach erneut ablegen.
+
+Unter Linux mit Wayland verwendet die App für Datei-Drops automatisch XWayland, sofern `DISPLAY` vorhanden ist. Auf reinen Wayland-Systemen ohne XWayland das File-Drop-Feld anklicken und Dateien auswählen.
