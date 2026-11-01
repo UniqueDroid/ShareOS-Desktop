@@ -40,6 +40,18 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(metadata["target"], target)
                 self.assertEqual(metadata["commit"], "0123456789abcdef")
 
+    def test_linux_archive_marks_binary_executable_without_host_chmod_support(self):
+        with tempfile.TemporaryDirectory() as name:
+            stage = Path(name)
+            binary = stage / "dummy-binary"
+            binary.write_bytes(b"test executable")
+            # Model Windows: chmod does not set Unix executable bits on files.
+            with mock.patch.object(Path, "chmod"):
+                archive, _ = MODULE.package("linux", "x86_64-unknown-linux-gnu", binary,
+                                            "0123456789abcdef", stage / "out", "rustc test")
+            with tarfile.open(archive) as file:
+                self.assertEqual(file.getmember("ShareOS-Desktop/shareos-desktop").mode, 0o755)
+
     def test_macos_bundle_metadata_and_icon_signing_commands(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

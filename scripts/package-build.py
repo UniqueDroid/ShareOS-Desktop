@@ -90,7 +90,13 @@ def package(platform, target, binary, commit, output, rust_version):
             "Projekt: https://github.com/UniqueDroid/ShareOS-Desktop\n", encoding="utf-8")
         if platform == "linux":
             with tarfile.open(archive, "w:gz") as file:
-                file.add(root, arcname=root.name)
+                def permissions(member):
+                    # Explicit archive mode also works when tests run on Windows,
+                    # where chmod cannot represent Unix executable permission bits.
+                    if member.name == "ShareOS-Desktop/shareos-desktop":
+                        member.mode = 0o755
+                    return member
+                file.add(root, arcname=root.name, filter=permissions)
         else:
             with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as file:
                 for path in sorted(root.rglob("*")):
