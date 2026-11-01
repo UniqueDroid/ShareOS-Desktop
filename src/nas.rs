@@ -283,7 +283,7 @@ impl Nas {
     }
     pub fn mkdir(&self, root: &str, path: &str, name: &str) -> Result<()> {
         ensure!(
-            crate::backup::safe_name(name),
+            crate::file_ops::valid_name(name),
             "Gültigen Ordnernamen angeben"
         );
         self.rpc(
@@ -291,6 +291,56 @@ impl Nas {
             "mkdir",
             json!({"root":root,"path":path,"name":name}),
         )?;
+        Ok(())
+    }
+    pub fn rename(&self, root: &str, path: &str, name: &str, to: &str) -> Result<()> {
+        ensure!(
+            crate::file_ops::valid_name(name) && crate::file_ops::valid_name(to),
+            "Ungültiger Dateiname"
+        );
+        self.rpc(
+            "shareos.files",
+            "rename",
+            json!({"root":root,"path":path,"name":name,"to":to}),
+        )?;
+        Ok(())
+    }
+    pub fn delete(&self, root: &str, path: &str, names: &[String]) -> Result<()> {
+        ensure!(
+            !names.is_empty() && names.iter().all(|name| crate::file_ops::valid_name(name)),
+            "Ungültige Auswahl"
+        );
+        self.rpc(
+            "shareos.files",
+            "delete",
+            json!({"root":root,"path":path,"names":names,"permanent":false}),
+        )?;
+        Ok(())
+    }
+    pub fn copy(&self, root: &str, path: &str, names: &[String], dest: &str) -> Result<()> {
+        ensure!(
+            !names.is_empty() && names.iter().all(|name| crate::file_ops::valid_name(name)),
+            "Ungültige Auswahl"
+        );
+        self.rpc(
+            "shareos.files",
+            "move",
+            json!({"root":root,"path":path,"names":names,"dest":dest,"copy":true}),
+        )?;
+        Ok(())
+    }
+    pub fn create_file(&self, root: &str, path: &str, name: &str) -> Result<()> {
+        ensure!(crate::file_ops::valid_name(name), "Ungültiger Dateiname");
+        let url = self.ticket(root, path, name, "put")?;
+        let data: Value = self
+            .http
+            .post(url)
+            .header(reqwest::header::CONTENT_LENGTH, 0)
+            .body(Vec::<u8>::new())
+            .send()?
+            .error_for_status()?
+            .json()?;
+        ensure!(data["ok"] == true, "Datei konnte nicht angelegt werden");
         Ok(())
     }
     pub fn refresh_shares(&self) -> Result<Vec<Share>> {
@@ -903,6 +953,110 @@ mod transfer_tests {
         let source = dir.path().join("note.txt");
         std::fs::write(&source, b"hello").unwrap();
         assert!(crate::file_drop::upload(&nas, vec![source]).is_err());
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+    #[test]
+    fn file_operations_use_server_permissions_and_do_not_overwrite_or_force_delete() {
+        let (nas, server) = mock(vec![
+            rpc_response(json!({"ok":true})),
+            rpc_response(json!({"ok":true})),
+            rpc_response(json!({"ok":true})),
+            ticket(),
+            (b"{\"ok\":true}".to_vec(), 11),
+        ]);
+        nas.rename("Team", "folder", "old.txt", "new.txt").unwrap();
+        nas.delete("Team", "folder", &["old.txt".into()]).unwrap();
+        let clipboard = crate::file_ops::Clipboard::new(
+            &nas,
+            "Team".into(),
+            "source".into(),
+            vec!["file.txt".into()],
+        );
+        clipboard.paste(&nas, "Team", "dest").unwrap();
+        nas.create_file("Team", "folder", "empty.txt").unwrap();
+        let requests = server.join().unwrap();
+        let params: Vec<Value> = requests[..4]
+            .iter()
+            .map(|request| serde_json::from_slice::<Value>(&request.1).unwrap()["params"].clone())
+            .collect();
+        assert_eq!(params[0][2], "rename");
+        assert_eq!(params[1][3]["permanent"], false);
+        assert_eq!(params[2][2], "move");
+        assert_eq!(params[2][3]["copy"], true);
+        assert_eq!(params[3][3]["overwrite"], false);
+        assert!(requests[4].1.is_empty());
+    }
+    #[test]
+    fn paste_between_roots_uses_read_and_write_tickets_without_overwrite() {
+        let (nas, server) = mock(vec![
+            rpc_response(json!({"entries":[{"name":"file.txt","type":"file","size":5}]})),
+            rpc_response(json!({"entries":[]})),
+            ticket(),
+            (b"hello".to_vec(), 5),
+            ticket(),
+            (b"{\"ok\":true}".to_vec(), 11),
+        ]);
+        let clipboard = crate::file_ops::Clipboard::new(
+            &nas,
+            "Team".into(),
+            "source".into(),
+            vec!["file.txt".into()],
+        );
+        clipboard.paste(&nas, "home", "dest").unwrap();
+        let requests = server.join().unwrap();
+        let get: Value = serde_json::from_slice(&requests[2].1).unwrap();
+        let put: Value = serde_json::from_slice(&requests[4].1).unwrap();
+        assert_eq!(get["params"][3]["root"], "Team");
+        assert_eq!(get["params"][3]["mode"], "get");
+        assert_eq!(put["params"][3]["root"], "home");
+        assert_eq!(put["params"][3]["path"], "dest");
+        assert_eq!(put["params"][3]["overwrite"], false);
+        assert_eq!(requests[5].1, b"hello");
+    }
+    #[test]
+    fn cross_root_folder_copy_preserves_empty_directories_and_places_nested_files() {
+        let (nas, server) = mock(vec![
+            rpc_response(json!({"entries":[{"name":"folder","type":"dir","size":0}]})),
+            rpc_response(json!({"entries":[]})),
+            rpc_response(
+                json!({"entries":[{"name":"empty","type":"dir","size":0},{"name":"file.txt","type":"file","size":5}]}),
+            ),
+            rpc_response(json!({"entries":[]})),
+            rpc_response(json!({"ok":true})),
+            rpc_response(json!({"ok":true})),
+            ticket(),
+            (b"hello".to_vec(), 5),
+            ticket(),
+            (b"{\"ok\":true}".to_vec(), 11),
+        ]);
+        let clipboard = crate::file_ops::Clipboard::new(
+            &nas,
+            "Team".into(),
+            "source".into(),
+            vec!["folder".into()],
+        );
+        clipboard.paste(&nas, "home", "dest").unwrap();
+        let requests = server.join().unwrap();
+        let mkdir: Value = serde_json::from_slice(&requests[4].1).unwrap();
+        let empty: Value = serde_json::from_slice(&requests[5].1).unwrap();
+        let put: Value = serde_json::from_slice(&requests[8].1).unwrap();
+        assert_eq!(mkdir["params"][3]["path"], "dest");
+        assert_eq!(mkdir["params"][3]["name"], "folder");
+        assert_eq!(empty["params"][3]["path"], "dest/folder");
+        assert_eq!(empty["params"][3]["name"], "empty");
+        assert_eq!(put["params"][3]["path"], "dest/folder");
+    }
+    #[test]
+    fn cross_root_copy_rejects_existing_destination_before_writes() {
+        let entries = json!({"entries":[{"name":"file.txt","type":"file","size":5}]});
+        let (nas, server) = mock(vec![rpc_response(entries.clone()), rpc_response(entries)]);
+        let clipboard = crate::file_ops::Clipboard::new(
+            &nas,
+            "Team".into(),
+            "source".into(),
+            vec!["file.txt".into()],
+        );
+        assert!(clipboard.paste(&nas, "home", "dest").is_err());
         assert_eq!(server.join().unwrap().len(), 2);
     }
     #[test]

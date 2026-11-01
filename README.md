@@ -1,6 +1,6 @@
 # ShareOS Desktop
 
-Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 34 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
+Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 41 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
 
 ## Schnell installieren und unter Windows testen
 
@@ -39,7 +39,7 @@ Anmeldepasswörter und Sitzungstokens der Desktop-App werden nicht auf Platte ge
 
 ## Stand der Prüfung
 
-34 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
+41 automatisierte Tests sind unter Linux bestanden. Sie prüfen RPC-Fehler, Benutzerzuordnung ohne Administrator-Fallback, Admin-Sperre für Benutzer, Abbruch bei unvollständigen Verzeichnislisten sowie Prüfsummen und Überschreibschutz bei Wiederherstellung. Die Entwicklung erfolgt ohne Zugriff auf eine reale NAS. Schnittstellen und Berechtigungen werden aus dem ShareOS-Repository abgeleitet und lokal mit simulierten NAS-Antworten geprüft. Hardwaretests führt der Benutzer im Heimnetz durch; sie sind keine Voraussetzung für die weitere Entwicklung. `192.168.0.32` ist eine Suchadresse der lokal ausgeführten App.
 
 Noch nicht enthalten: geplante Backups, inkrementelle Speicherung, automatische Aufbewahrung, Windows-/macOS-Installer und Signierung. Für Linux liegt ein lokales Installationsskript bei. Upload und Download verwenden native Dateidialoge. Die Box-Einstellungen verwenden ebenfalls Dateidialoge. Der Dateibackup-Bereich verwendet weiterhin Pfadeingabefelder. Unter Linux benötigen die Dialoge einen laufenden `xdg-desktop-portal`-Dienst mit passendem Desktop-Backend (beispielsweise KDE oder GTK).
 
@@ -125,3 +125,19 @@ Vor der Anmeldung ist ausschließlich **Box finden** sichtbar. Nach erfolgreiche
 Im Bereich **Dateien** lokale Dateien in die App ziehen: Die App legt im eigenen NAS-Home bei Bedarf **File Drop** an und lädt die Dateien dort hoch. Das Ziel ist unabhängig vom aktuell geöffneten Ordner. Namenskonflikte erhalten einen Zusatz wie ` (2)`; bestehende Dateien werden nicht überschrieben. Nach erfolgreichem Upload zeigt der Dateibrowser den File-Drop-Ordner an. Ordner-Uploads sind nicht enthalten. Details: [File Drop](docs/INSTALL.md#file-drop).
 
 Installer-Smoke-Test (ohne Downloads und echte Builds): `python3 -m unittest discover -s tests -v`.
+
+## Datei- und Ordneraktionen
+
+Checkboxen wählen einzelne oder alle sichtbaren Einträge aus. Die Werkzeugleiste und das Rechtsklick-Menü bieten **Kopieren**, **Einfügen**, **Umbenennen** und **Löschen**. **Neue Datei** legt eine leere Datei an, **Neuer Ordner** eine Directory. Umbenennen erfordert genau einen ausgewählten Eintrag; Schreibaktionen sind bei Nur-Lesen-Ordnern deaktiviert und werden zusätzlich von der NAS geprüft.
+
+**Kopieren** übernimmt die Auswahl in die interne Zwischenablage. Danach den Zielordner öffnen und **Einfügen** wählen. Innerhalb eines Bereichs wird die NAS-Methode `shareos.files.move` mit `copy:true` verwendet. Zwischen verschiedenen Bereichen plant die App den vollständigen Verzeichnisbaum und überträgt Dateien über eine geschützte lokale temporäre Datei; dafür muss lokal Platz für die größte Datei verfügbar sein. Leere Ordner bleiben dabei erhalten, POSIX-Metadaten werden bei dieser Übertragung nicht übernommen. Verknüpfungen und Spezialdateien können nur innerhalb desselben Bereichs kopiert werden. Bestehende Ziele werden abgewiesen. Ein Fehler kann bereits angelegte Zielordner oder kopierte Dateien hinterlassen; es wird nicht automatisch gelöscht. Die Zwischenablage ist an Box und Benutzer gebunden und wird beim Abmelden geleert.
+
+**Löschen** erfordert eine Bestätigung mit der konkreten Auswahl. Die App sendet `permanent:false`; ob der NAS-Papierkorb benutzt wird oder endgültig gelöscht wird, entscheidet die Konfiguration der Box. Ordner werden einschließlich ihres Inhalts gelöscht.
+
+## Backup-Quelle und Sicherungsstände
+
+Der **Backup-Zielordner** wird automatisch auch als Quelle der Wiederherstellungsstände verwendet. Nach Auswahl über den Ordnerdialog oder nach einer neuen Sicherung lädt die App die vollständigen `snapshot-*`-Stände und bietet sie nach Datum sortiert an. Datumsangaben stehen in UTC. Ein direkt ausgewählter einzelner Snapshot-Ordner ist ebenfalls möglich. Unvollständige `.incomplete-*`-Stände werden ignoriert, ungültige `snapshot-*`-Stände gezählt und ausgelassen.
+
+Über **Abweichenden Backup-Ordner als Wiederherstellungsquelle verwenden** kann gezielt eine andere Quelle ausgewählt werden. Wird die Option wieder ausgeschaltet, folgt die Quelle erneut dem Backup-Ziel. Änderungen der Quelle verwerfen einen zuvor geladenen Stand, damit Dateien nicht versehentlich aus einer alten Quelle wiederhergestellt werden.
+
+Das **Ziel für wiederhergestellte Dateien** bleibt separat wählbar und wird durch einen Wechsel der Backup-Quelle nicht verändert. Einzeldatei-Wiederherstellung verwendet weiterhin SHA-256 und überschreibt keine vorhandenen lokalen Dateien.

@@ -3,6 +3,7 @@ mod backup;
 mod browser;
 mod drives;
 mod file_drop;
+mod file_ops;
 mod nas;
 mod preferences;
 mod terminal;
@@ -32,6 +33,21 @@ const TABS: [&str; 6] = [
 fn tab_visible(index: usize, logged_in: bool, admin: bool) -> bool {
     index == 0 || (logged_in && (index != 5 || admin))
 }
+enum FileAction {
+    Copy(Vec<String>),
+    Paste,
+    Rename(String),
+    Delete(Vec<String>),
+}
+#[derive(Clone, Copy, PartialEq)]
+enum FileDialogKind {
+    Rename,
+    Delete,
+}
+struct PendingFileDialog {
+    kind: FileDialogKind,
+    selection: file_ops::Clipboard,
+}
 enum Change {
     Message(String),
     Found(Vec<String>),
@@ -39,6 +55,11 @@ enum Change {
     Login(Nas, Vec<Root>),
     List(Vec<Entry>, bool),
     Snapshot(backup::Snapshot),
+    Catalog(String, backup::Catalog),
+    BackupDone(String),
+    BackupFolder(String),
+    RestoreFolder(String),
+    LocalFolder(String),
     Preview(Value, String, String),
     Logout,
     Reload(String),
@@ -63,12 +84,23 @@ struct App {
     found: Vec<String>,
     local: String,
     file_filter: String,
+    file_selection: std::collections::BTreeSet<String>,
+    file_clipboard: Option<file_ops::Clipboard>,
+    file_dialog: Option<PendingFileDialog>,
+    rename_to: String,
+    new_file: String,
     show_hidden: bool,
     file_sort: browser::Sort,
     descending: bool,
     new_folder: String,
     transfer: Option<Arc<transfer::Progress>>,
     backup_dir: String,
+    restore_override: bool,
+    restore_base: String,
+    catalog_source: String,
+    snapshot_choices: Vec<backup::SnapshotInfo>,
+    snapshot_invalid: usize,
+    last_backup: String,
     snapshot_dir: String,
     snapshot: Option<backup::Snapshot>,
     loaded_snapshot_dir: String,
@@ -134,12 +166,23 @@ impl App {
             found: vec![],
             local: String::new(),
             file_filter: String::new(),
+            file_selection: Default::default(),
+            file_clipboard: None,
+            file_dialog: None,
+            rename_to: String::new(),
+            new_file: String::new(),
             show_hidden: false,
             file_sort: browser::Sort::default(),
             descending: false,
             new_folder: String::new(),
             transfer: None,
             backup_dir: String::new(),
+            restore_override: false,
+            restore_base: String::new(),
+            catalog_source: String::new(),
+            snapshot_choices: vec![],
+            snapshot_invalid: 0,
+            last_backup: String::new(),
             snapshot_dir: String::new(),
             snapshot: None,
             loaded_snapshot_dir: String::new(),
@@ -180,6 +223,7 @@ impl App {
             let root = self.root.clone();
             let path = self.path.clone();
             self.entries.clear();
+            self.file_selection.clear();
             self.start(ctx, move || {
                 let list = nas.list(&root, &path)?;
                 Ok(Change::List(list.entries, list.truncated))
@@ -258,6 +302,47 @@ impl App {
                                         "Die NAS-API zeigt nur die ersten 2000 Einträge.".into();
                                 }
                             }
+                            Change::BackupFolder(path) => {
+                                self.backup_dir = path;
+                                self.sync_restore_source();
+                                if !self.restore_override {
+                                    self.load_catalog(ctx);
+                                }
+                            }
+                            Change::RestoreFolder(path) => {
+                                self.restore_base = path;
+                                self.restore_override = true;
+                                self.sync_restore_source();
+                                self.load_catalog(ctx);
+                            }
+                            Change::LocalFolder(path) => self.local = path,
+                            Change::BackupDone(message) => {
+                                self.last_backup = message;
+                                self.sync_restore_source();
+                                self.load_catalog(ctx);
+                            }
+                            Change::Catalog(source, catalog) => {
+                                if source == self.restore_source() {
+                                    self.snapshot_invalid = catalog.invalid;
+                                    self.snapshot_choices = catalog.snapshots;
+                                    if !self.snapshot_choices.iter().any(|info| {
+                                        info.path.to_string_lossy() == self.snapshot_dir
+                                    }) {
+                                        self.snapshot_dir = self
+                                            .snapshot_choices
+                                            .first()
+                                            .map(|info| info.path.display().to_string())
+                                            .unwrap_or_default();
+                                    }
+                                    if self.snapshot_dir.is_empty() {
+                                        self.snapshot = None;
+                                        self.status =
+                                            "Keine vollständigen Sicherungsstände gefunden.".into();
+                                    } else {
+                                        self.load_snapshot(ctx);
+                                    }
+                                }
+                            }
                             Change::Snapshot(snapshot) => {
                                 self.snapshot = Some(snapshot);
                                 self.loaded_snapshot_dir = self.snapshot_dir.clone();
@@ -267,6 +352,9 @@ impl App {
                                 self.confirm = false;
                             }
                             Change::Logout => {
+                                self.file_selection.clear();
+                                self.file_clipboard = None;
+                                self.file_dialog = None;
                                 self.terminal = None;
                                 self.nas = None;
                                 self.trusted_certificate = None;
@@ -438,6 +526,8 @@ impl App {
         let mut download = None;
         let mut upload = false;
         let mut mkdir = false;
+        let mut create_file = false;
+        let mut action = None;
         ui.horizontal_top(|ui| {
             egui::Frame::new().fill(p.bg).corner_radius(10).inner_margin(12).show(ui, |ui| {ui.vertical(|ui| {
                 ui.set_width(175.0);
@@ -475,9 +565,19 @@ impl App {
                     upload=ui.add_enabled(writable,egui::Button::new("Hochladen …")).clicked();
                     ui.label(egui::RichText::new(if writable {"Lesen & Schreiben"} else {"Nur lesen"}).small().color(p.muted));
                 });
-                ui.add(text_input(&mut self.file_filter).hint_text("In diesem Ordner suchen …").desired_width(f32::INFINITY));
                 ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut self.show_hidden,"Versteckte Dateien");
+                    let names:Vec<_>=self.file_selection.iter().cloned().collect();
+                    ui.label(format!("{} ausgewählt",names.len()));
+                    if ui.add_enabled(!names.is_empty(),egui::Button::new("Kopieren")).clicked(){action=Some(FileAction::Copy(names.clone()));}
+                    if ui.add_enabled(writable && self.file_clipboard.is_some(),egui::Button::new("Einfügen")).clicked(){action=Some(FileAction::Paste);}
+                    if ui.add_enabled(writable && names.len()==1,egui::Button::new("Umbenennen")).clicked(){action=Some(FileAction::Rename(names[0].clone()));}
+                    if ui.add_enabled(writable && !names.is_empty(),egui::Button::new("Löschen")).clicked(){action=Some(FileAction::Delete(names));}
+                    if ui.button("Auswahl aufheben").clicked(){self.file_selection.clear();}
+                });
+                if let Some(clipboard)=&self.file_clipboard {ui.small(format!("Zwischenablage: {} Einträge aus {}/{}",clipboard.names.len(),clipboard.root,clipboard.path));}
+                if ui.add(text_input(&mut self.file_filter).hint_text("In diesem Ordner suchen …").desired_width(f32::INFINITY)).changed(){self.file_selection.clear();}
+                ui.horizontal_wrapped(|ui| {
+                    if ui.checkbox(&mut self.show_hidden,"Versteckte Dateien").changed(){self.file_selection.clear();}
                     egui::ComboBox::from_id_salt("file-sort").selected_text(match self.file_sort {browser::Sort::Name=>"Name",browser::Sort::Size=>"Größe",browser::Sort::Modified=>"Geändert"}).show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.file_sort,browser::Sort::Name,"Name");
                         ui.selectable_value(&mut self.file_sort,browser::Sort::Size,"Größe");
@@ -496,12 +596,26 @@ impl App {
                 } else {
                     egui::ScrollArea::both().id_salt("file-list").max_height(420.0).min_scrolled_height(120.0).show(ui, |ui| {
                         egui::Grid::new("files-table").striped(true).spacing([16.0,8.0]).show(ui, |ui| {
+                            let mut all=!rows.is_empty() && rows.iter().all(|entry|self.file_selection.contains(&entry.name));
+                            if ui.checkbox(&mut all,"").on_hover_text("Alle sichtbaren Einträge auswählen").changed(){
+                                for entry in &rows {if all{self.file_selection.insert(entry.name.clone());}else{self.file_selection.remove(&entry.name);}}
+                            }
                             for title in ["","NAME","GRÖSSE","TYP","GEÄNDERT",""] { ui.label(egui::RichText::new(title).small().strong().color(p.muted)); } ui.end_row();
                             for entry in rows {
+                                let mut selected=self.file_selection.contains(&entry.name);
+                                if ui.checkbox(&mut selected,"").changed(){if selected{self.file_selection.insert(entry.name.clone());}else{self.file_selection.remove(&entry.name);}}
                                 browser::icon(ui,entry.kind=="dir",if entry.kind=="dir" {p.accent} else {p.muted});
                                 let response = ui.add(egui::Button::new(egui::RichText::new(&entry.name).color(p.text)).frame(false));
-                                if response.on_hover_text(&entry.name).clicked() && entry.kind=="dir" {
-                                    navigate=Some((self.root.clone(),if self.path.is_empty() {entry.name.clone()} else {format!("{}/{}",self.path,entry.name)}));
+                                let response=response.on_hover_text(&entry.name);
+                                response.context_menu(|ui| {
+                                    let names=if self.file_selection.contains(&entry.name){self.file_selection.iter().cloned().collect()}else{vec![entry.name.clone()]};
+                                    if ui.button("Kopieren").clicked(){action=Some(FileAction::Copy(names.clone()));ui.close_menu();}
+                                    if ui.add_enabled(writable,egui::Button::new("Umbenennen")).clicked(){action=Some(FileAction::Rename(entry.name.clone()));ui.close_menu();}
+                                    if ui.add_enabled(writable,egui::Button::new("Löschen")).clicked(){action=Some(FileAction::Delete(names));ui.close_menu();}
+                                });
+                                if response.clicked() {
+                                    if entry.kind=="dir" {navigate=Some((self.root.clone(),if self.path.is_empty() {entry.name.clone()} else {format!("{}/{}",self.path,entry.name)}));}
+                                    else if !self.file_selection.insert(entry.name.clone()){self.file_selection.remove(&entry.name);}
                                 }
                                 ui.label(if entry.kind=="file" {browser::size(entry.size)} else {"–".into()});
                                 ui.label(egui::RichText::new(browser::kind(entry)).small().color(p.muted));
@@ -516,6 +630,9 @@ impl App {
                 }
                 ui.separator();
                 if writable {
+                    ui.collapsing("Neue Datei",|ui| {
+                        ui.horizontal(|ui| {ui.add(text_input(&mut self.new_file).hint_text("Dateiname, z. B. Notiz.txt").desired_width(240.0));create_file=ui.add_enabled(file_ops::valid_name(&self.new_file),egui::Button::new("Anlegen")).clicked();});
+                    });
                     ui.collapsing("Neuer Ordner", |ui| {
                         ui.horizontal(|ui| {
                             ui.add(text_input(&mut self.new_folder).hint_text("Ordnername").desired_width(240.0));
@@ -531,6 +648,66 @@ impl App {
             self.path = path;
             self.file_filter.clear();
             self.refresh(ctx);
+            return;
+        }
+        if let Some(action) = action {
+            match action {
+                FileAction::Copy(names) => {
+                    self.status = format!(
+                        "{} Einträge kopiert. Zielordner öffnen und Einfügen wählen.",
+                        names.len()
+                    );
+                    self.file_clipboard = Some(file_ops::Clipboard::new(
+                        &nas,
+                        self.root.clone(),
+                        self.path.clone(),
+                        names,
+                    ));
+                }
+                FileAction::Paste => {
+                    if let Some(clipboard) = self.file_clipboard.clone() {
+                        let root = self.root.clone();
+                        let path = self.path.clone();
+                        self.start(ctx, move || {
+                            clipboard.paste(&nas, &root, &path)?;
+                            Ok(Change::Reload("Kopieren abgeschlossen.".into()))
+                        });
+                    }
+                }
+                FileAction::Rename(name) => {
+                    self.rename_to = name.clone();
+                    self.file_dialog = Some(PendingFileDialog {
+                        kind: FileDialogKind::Rename,
+                        selection: file_ops::Clipboard::new(
+                            &nas,
+                            self.root.clone(),
+                            self.path.clone(),
+                            vec![name],
+                        ),
+                    });
+                }
+                FileAction::Delete(names) => {
+                    self.file_dialog = Some(PendingFileDialog {
+                        kind: FileDialogKind::Delete,
+                        selection: file_ops::Clipboard::new(
+                            &nas,
+                            self.root.clone(),
+                            self.path.clone(),
+                            names,
+                        ),
+                    });
+                }
+            }
+            return;
+        }
+        if create_file {
+            let root = self.root.clone();
+            let path = self.path.clone();
+            let name = std::mem::take(&mut self.new_file);
+            self.start(ctx, move || {
+                nas.create_file(&root, &path, &name)?;
+                Ok(Change::Reload(format!("Datei {name} angelegt.")))
+            });
             return;
         }
         if mkdir {
@@ -623,6 +800,100 @@ impl App {
                 });
         }
     }
+    fn file_dialogs(&mut self, ctx: &egui::Context) {
+        let Some(nas) = self.nas.clone() else {
+            self.file_dialog = None;
+            self.file_clipboard = None;
+            self.file_selection.clear();
+            return;
+        };
+        let Some(dialog) = &self.file_dialog else {
+            return;
+        };
+        let mut execute = false;
+        let mut cancel = false;
+        let rename = dialog.kind == FileDialogKind::Rename;
+        egui::Window::new(if rename {
+            "Umbenennen"
+        } else {
+            "Auswahl löschen?"
+        })
+        .id(egui::Id::new("file-operation"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{}/{}",
+                dialog.selection.root, dialog.selection.path
+            ));
+            if rename {
+                ui.label(&dialog.selection.names[0]);
+                ui.add(text_input(&mut self.rename_to));
+            } else {
+                ui.label(format!(
+                    "{} Einträge einschließlich Ordnerinhalt löschen?",
+                    dialog.selection.names.len()
+                ));
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for name in &dialog.selection.names {
+                            ui.label(name);
+                        }
+                    });
+                ui.label("Ohne aktivierten NAS-Papierkorb werden die Daten endgültig entfernt.");
+            }
+            ui.horizontal(|ui| {
+                cancel = ui.button("Abbrechen").clicked();
+                let valid = !rename
+                    || (file_ops::valid_name(&self.rename_to)
+                        && self.rename_to != dialog.selection.names[0]);
+                execute = ui
+                    .add_enabled(
+                        valid && self.job.is_none(),
+                        egui::Button::new(if rename {
+                            "Umbenennen"
+                        } else {
+                            "Löschen bestätigen"
+                        }),
+                    )
+                    .clicked();
+            });
+        });
+        if cancel {
+            self.file_dialog = None;
+        }
+        if execute {
+            let dialog = self.file_dialog.take().unwrap();
+            let to = self.rename_to.clone();
+            self.start(ctx, move || {
+                dialog.selection.check(&nas)?;
+                if dialog.kind == FileDialogKind::Rename {
+                    nas.rename(
+                        &dialog.selection.root,
+                        &dialog.selection.path,
+                        &dialog.selection.names[0],
+                        &to,
+                    )?;
+                } else {
+                    nas.delete(
+                        &dialog.selection.root,
+                        &dialog.selection.path,
+                        &dialog.selection.names,
+                    )?;
+                }
+                Ok(Change::Reload(
+                    if dialog.kind == FileDialogKind::Rename {
+                        "Eintrag umbenannt."
+                    } else {
+                        "Auswahl gelöscht."
+                    }
+                    .into(),
+                ))
+            });
+        }
+    }
     fn receive_file_drop(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
         if dropped.is_empty() {
@@ -632,7 +903,7 @@ impl App {
             self.status = "Fehler: Für File Drop anmelden und den Bereich Dateien öffnen.".into();
             return;
         }
-        if self.job.is_some() {
+        if self.job.is_some() || self.file_dialog.is_some() {
             self.status =
                 "Fehler: Bitte die laufende Aufgabe abwarten und die Dateien erneut ablegen."
                     .into();
@@ -712,16 +983,52 @@ impl App {
             });
         }
     }
+    fn restore_source(&self) -> &str {
+        if self.restore_override {
+            &self.restore_base
+        } else {
+            &self.backup_dir
+        }
+    }
+    fn sync_restore_source(&mut self) {
+        let source = self.restore_source().to_owned();
+        if self.catalog_source != source {
+            self.catalog_source = source;
+            self.snapshot_choices.clear();
+            self.snapshot_invalid = 0;
+            self.snapshot = None;
+            self.snapshot_dir.clear();
+            self.loaded_snapshot_dir.clear();
+        }
+    }
+    fn load_catalog(&mut self, ctx: &egui::Context) {
+        let source = self.restore_source().to_owned();
+        if source.trim().is_empty() {
+            self.status = "Bitte zuerst einen Backup-Ordner auswählen.".into();
+            return;
+        }
+        self.start(ctx, move || {
+            let catalog = backup::catalog(&PathBuf::from(&source))?;
+            Ok(Change::Catalog(source, catalog))
+        });
+    }
+    fn load_snapshot(&mut self, ctx: &egui::Context) {
+        let directory = self.snapshot_dir.clone();
+        self.snapshot = None;
+        self.start(ctx, move || {
+            Ok(Change::Snapshot(backup::load(&PathBuf::from(directory))?))
+        });
+    }
     fn backups(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.label("Lokale Sicherungsstände");
+        ui.label(egui::RichText::new("Sicherung erstellen").strong());
         if let Some(nas) = &self.nas {
-            ui.label("Eigene Dateien und freigegebene Ordner mit den Rechten der aktuellen Anmeldung auswählen.");
+            ui.label("Eigene Dateien und freigegebene Ordner nach deinen Rechten auswählen.");
             if nas.admin {
-                ui.colored_label(egui::Color32::YELLOW, "Administrator: Die NAS-API bietet ganze Laufwerke an. Auswahl vor dem Sichern prüfen.");
+                ui.label("Administrator: Die Auswahl kann auch ganze Laufwerke umfassen.");
             }
-            for (i, root) in self.roots.iter().enumerate() {
+            for (index, root) in self.roots.iter().enumerate() {
                 ui.checkbox(
-                    &mut self.selected[i],
+                    &mut self.selected[index],
                     format!(
                         "{}{}",
                         root.name,
@@ -729,44 +1036,136 @@ impl App {
                     ),
                 );
             }
-            field(ui, "Backup-Zielordner", &mut self.backup_dir);
-            if ui.button("Jetzt sichern").clicked() {
-                let nas = nas.clone();
-                let roots = self
-                    .roots
-                    .iter()
-                    .zip(&self.selected)
-                    .filter(|(_, selected)| **selected)
-                    .map(|(root, _)| root.clone())
-                    .collect();
-                let dest = self.backup_dir.clone();
+        }
+        field(ui, "Backup-Zielordner", &mut self.backup_dir);
+        if ui.button("Backup-Ordner auswählen …").clicked() {
+            self.start(ctx, move || {
+                let Some(path) = rfd::FileDialog::new()
+                    .set_title("Backup-Zielordner")
+                    .pick_folder()
+                else {
+                    return Ok(Change::Message("Auswahl abgebrochen.".into()));
+                };
+                Ok(Change::BackupFolder(path.display().to_string()))
+            });
+        }
+        if ui
+            .add_enabled(
+                self.nas.is_some()
+                    && self.job.is_none()
+                    && !self.backup_dir.trim().is_empty()
+                    && self.selected.iter().any(|selected| *selected),
+                egui::Button::new("Jetzt sichern"),
+            )
+            .clicked()
+        {
+            let nas = self.nas.clone().unwrap();
+            let roots = self
+                .roots
+                .iter()
+                .zip(&self.selected)
+                .filter(|(_, selected)| **selected)
+                .map(|(root, _)| root.clone())
+                .collect();
+            let destination = self.backup_dir.clone();
+            self.start(ctx, move || {
+                Ok(Change::BackupDone(backup::create(
+                    &nas,
+                    roots,
+                    &PathBuf::from(destination),
+                )?))
+            });
+        }
+        if !self.last_backup.is_empty() {
+            ui.label(&self.last_backup);
+        }
+        ui.small("Dateien werden nacheinander gelesen; kein atomarer NAS-Snapshot. Links werden ausgelassen, unvollständige Ordnerlisten brechen die Sicherung ab.");
+        ui.separator();
+        ui.label(egui::RichText::new("Sicherungsstand wiederherstellen").strong());
+        let changed = ui
+            .checkbox(
+                &mut self.restore_override,
+                "Abweichenden Backup-Ordner als Wiederherstellungsquelle verwenden",
+            )
+            .changed();
+        if changed && self.restore_override && self.restore_base.is_empty() {
+            self.restore_base = self.backup_dir.clone();
+        }
+        if self.restore_override {
+            field(ui, "Abweichende Quelle", &mut self.restore_base);
+            if ui.button("Anderen Backup-Ordner auswählen …").clicked() {
                 self.start(ctx, move || {
-                    anyhow::ensure!(!dest.trim().is_empty(), "Backup-Zielordner angeben");
-                    Ok(Change::Message(backup::create(
-                        &nas,
-                        roots,
-                        &PathBuf::from(dest),
-                    )?))
+                    let Some(path) = rfd::FileDialog::new()
+                        .set_title("Wiederherstellungsquelle")
+                        .pick_folder()
+                    else {
+                        return Ok(Change::Message("Auswahl abgebrochen.".into()));
+                    };
+                    Ok(Change::RestoreFolder(path.display().to_string()))
                 });
             }
         } else {
-            ui.label("Zum Erstellen einer Sicherung bitte anmelden.");
+            ui.label(format!(
+                "Quelle: {}",
+                if self.backup_dir.is_empty() {
+                    "wie Backup-Zielordner"
+                } else {
+                    &self.backup_dir
+                }
+            ));
         }
-        ui.small("Links und Spezialdateien werden ausgelassen. Abgeschnittene NAS-Verzeichnislisten brechen die Sicherung ab. Dateien werden nacheinander gelesen; kein atomarer NAS-Snapshot.");
-        ui.separator();
-        field(
-            ui,
-            "Sicherungsstand (snapshot-…-Ordner)",
-            &mut self.snapshot_dir,
+        self.sync_restore_source();
+        if (changed
+            || ui
+                .button("Sicherungsstände laden / aktualisieren")
+                .clicked())
+            && self.job.is_none()
+        {
+            self.load_catalog(ctx);
+        }
+        if self.snapshot_invalid > 0 {
+            ui.label(format!(
+                "{} ungültige oder unvollständige Sicherungsstände werden ausgelassen.",
+                self.snapshot_invalid
+            ));
+        }
+        let previous = self.snapshot_dir.clone();
+        egui::ComboBox::from_id_salt("backup-snapshot")
+            .width(ui.available_width().min(850.0))
+            .selected_text(
+                self.snapshot_choices
+                    .iter()
+                    .find(|info| info.path.to_string_lossy() == self.snapshot_dir)
+                    .map(|info| info.label())
+                    .unwrap_or_else(|| "Sicherungsstand auswählen".into()),
+            )
+            .show_ui(ui, |ui| {
+                for info in &self.snapshot_choices {
+                    ui.selectable_value(
+                        &mut self.snapshot_dir,
+                        info.path.display().to_string(),
+                        info.label(),
+                    );
+                }
+            });
+        if self.snapshot_dir != previous && self.job.is_none() {
+            self.load_snapshot(ctx);
+        }
+        ui.small(
+            "Die Datumsanzeige verwendet UTC. Nur vollständige Sicherungsstände werden angeboten.",
         );
-        if ui.button("Sicherungsstand öffnen").clicked() {
-            let dir = self.snapshot_dir.clone();
-            self.snapshot = None;
+        field(ui, "Ziel für wiederhergestellte Dateien", &mut self.local);
+        if ui.button("Wiederherstellungsziel auswählen …").clicked() {
             self.start(ctx, move || {
-                Ok(Change::Snapshot(backup::load(&PathBuf::from(dir))?))
+                let Some(path) = rfd::FileDialog::new()
+                    .set_title("Wiederhergestellte Dateien speichern")
+                    .pick_folder()
+                else {
+                    return Ok(Change::Message("Auswahl abgebrochen.".into()));
+                };
+                Ok(Change::LocalFolder(path.display().to_string()))
             });
         }
-        field(ui, "Wiederherstellungs-Zielordner", &mut self.local);
         let mut restore = None;
         if let Some(snapshot) = &self.snapshot {
             ui.label(format!(
@@ -776,31 +1175,36 @@ impl App {
                 snapshot.files.len()
             ));
             egui::ScrollArea::vertical()
-                .max_height(240.0)
+                .max_height(260.0)
                 .show(ui, |ui| {
-                    for (i, file) in snapshot.files.iter().enumerate() {
+                    for (index, file) in snapshot.files.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(format!("{}/{}/{}", file.root, file.path, file.name));
-                            if ui.button("Wiederherstellen").clicked() {
-                                restore = Some(i);
+                            if ui
+                                .add_enabled(
+                                    !self.local.is_empty(),
+                                    egui::Button::new("Wiederherstellen"),
+                                )
+                                .clicked()
+                            {
+                                restore = Some(index);
                             }
                         });
                     }
                 });
         }
-        if let Some(i) = restore {
-            let dir = self.loaded_snapshot_dir.clone();
-            let dest = self.local.clone();
+        if let Some(index) = restore {
+            let source = self.loaded_snapshot_dir.clone();
+            let destination = self.local.clone();
             self.start(ctx, move || {
-                anyhow::ensure!(!dest.trim().is_empty(), "Zielordner angeben");
                 Ok(Change::Message(backup::restore(
-                    &PathBuf::from(dir),
-                    i,
-                    &PathBuf::from(dest),
+                    &PathBuf::from(source),
+                    index,
+                    &PathBuf::from(destination),
                 )?))
             });
         }
-        ui.small("Einzelne Dateien werden lokal mit SHA-256-Prüfung wiederhergestellt. Vorhandene Dateien bleiben erhalten. Upload zurück zur Box ist unter Dateien möglich.");
+        ui.small("SHA-256-Prüfung und Überschreibschutz bleiben aktiv. Wiederhergestellte Dateien landen im gewählten lokalen Ziel.");
     }
     fn settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let Some(nas) = self.nas.clone().filter(|nas| nas.admin) else {
@@ -1001,6 +1405,9 @@ impl App {
                                 .add_enabled(self.job.is_none(), egui::Button::new("Abmelden"))
                                 .clicked()
                             {
+                                self.file_selection.clear();
+                                self.file_clipboard = None;
+                                self.file_dialog = None;
                                 self.terminal = None;
                                 self.nas = None;
                                 self.trusted_certificate = None;
@@ -1106,7 +1513,7 @@ impl App {
                                     .color(p.accent),
                             );
                             ui.add_space(8.0);
-                            let busy = self.job.is_some();
+                            let busy = self.job.is_some() || self.file_dialog.is_some();
                             ui.add_enabled_ui(!busy, |ui| match self.tab {
                                 0 => self.discovery(ui, ctx),
                                 1 => self.files(ui, ctx),
@@ -1118,6 +1525,7 @@ impl App {
                         });
                 });
             });
+        self.file_dialogs(ctx);
     }
 }
 fn main() -> eframe::Result {
@@ -1165,6 +1573,31 @@ mod ui_tests {
         app.job = Some(rx);
         let _ = ctx.run(input(), |ctx| app.receive_file_drop(ctx));
         assert!(app.status.contains("laufende Aufgabe"));
+    }
+    #[test]
+    fn backup_source_follows_target_until_explicitly_overridden() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.backup_dir = "backup-a".into();
+        app.local = "restored-files".into();
+        app.sync_restore_source();
+        assert_eq!(app.restore_source(), "backup-a");
+        app.backup_dir = "backup-b".into();
+        app.sync_restore_source();
+        assert_eq!(app.restore_source(), "backup-b");
+        app.restore_override = true;
+        app.restore_base = "archive".into();
+        app.sync_restore_source();
+        assert_eq!(app.restore_source(), "archive");
+        app.loaded_snapshot_dir = "archive/snapshot-1".into();
+        app.backup_dir = "backup-c".into();
+        app.sync_restore_source();
+        assert_eq!(app.loaded_snapshot_dir, "archive/snapshot-1");
+        app.restore_override = false;
+        app.sync_restore_source();
+        assert_eq!(app.restore_source(), "backup-c");
+        assert!(app.loaded_snapshot_dir.is_empty());
+        assert_eq!(app.local, "restored-files");
     }
     #[test]
     fn navigation_requires_login_and_terminal_requires_admin() {

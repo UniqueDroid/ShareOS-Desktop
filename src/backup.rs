@@ -250,3 +250,98 @@ mod tests {
         assert!(restore(source.path(), 0, dest.path()).is_err());
     }
 }
+
+#[derive(Clone)]
+pub struct SnapshotInfo {
+    pub path: std::path::PathBuf,
+    pub created: u64,
+    pub user: String,
+    pub files: usize,
+}
+impl SnapshotInfo {
+    pub fn label(&self) -> String {
+        let date = i64::try_from(self.created)
+            .ok()
+            .and_then(|created| time::OffsetDateTime::from_unix_timestamp(created).ok())
+            .and_then(|date| {
+                date.format(&time::format_description::well_known::Rfc3339)
+                    .ok()
+            })
+            .unwrap_or_else(|| "Unbekanntes Datum".into());
+        format!("{date} · {} · {} Dateien", self.user, self.files)
+    }
+}
+pub struct Catalog {
+    pub snapshots: Vec<SnapshotInfo>,
+    pub invalid: usize,
+}
+pub fn catalog(directory: &Path) -> Result<Catalog> {
+    let paths = if directory.join("manifest.json").is_file() {
+        vec![directory.to_path_buf()]
+    } else {
+        let mut paths = vec![];
+        for entry in fs::read_dir(directory).context("Backup-Ordner kann nicht gelesen werden")? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir()
+                && entry.file_name().to_string_lossy().starts_with("snapshot-")
+            {
+                paths.push(entry.path());
+            }
+        }
+        paths
+    };
+    let mut result = Catalog {
+        snapshots: vec![],
+        invalid: 0,
+    };
+    for path in paths {
+        match load(&path) {
+            Ok(snapshot) => result.snapshots.push(SnapshotInfo {
+                path,
+                created: snapshot.created,
+                user: snapshot.user,
+                files: snapshot.files.len(),
+            }),
+            Err(_) => result.invalid += 1,
+        }
+    }
+    result
+        .snapshots
+        .sort_by(|a, b| b.created.cmp(&a.created).then_with(|| b.path.cmp(&a.path)));
+    Ok(result)
+}
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    #[test]
+    fn backup_parent_lists_complete_stands_newest_first_and_skips_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, created) in [
+            ("snapshot-first", 1),
+            ("snapshot-second", 2),
+            (".incomplete-third", 3),
+        ] {
+            let path = dir.path().join(name);
+            fs::create_dir(&path).unwrap();
+            let snapshot = Snapshot {
+                format: 1,
+                box_url: "https://box/".into(),
+                user: "alice".into(),
+                created,
+                files: vec![],
+                skipped_links: 0,
+            };
+            fs::write(
+                path.join("manifest.json"),
+                serde_json::to_vec(&snapshot).unwrap(),
+            )
+            .unwrap();
+        }
+        fs::create_dir(dir.path().join("snapshot-broken")).unwrap();
+        let catalog = catalog(dir.path()).unwrap();
+        assert_eq!(catalog.snapshots.len(), 2);
+        assert_eq!(catalog.invalid, 1);
+        assert_eq!(catalog.snapshots[0].created, 2);
+        assert!(catalog.snapshots[0].label().contains("alice"));
+    }
+}
