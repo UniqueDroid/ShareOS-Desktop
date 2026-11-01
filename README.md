@@ -2,16 +2,9 @@
 
 Früher Rust-Prototyp für Windows, Linux und macOS mit egui/eframe. Linux-Build und 42 automatisierte Tests sind geprüft; die grafische Oberfläche und die plattformspezifischen Integrationen sind noch nicht durchgängig getestet. Eigenständiges Projekt im Repository [UniqueDroid/ShareOS-Desktop](https://github.com/UniqueDroid/ShareOS-Desktop) neben dem Firmware-Repository. Die Firmware bleibt unverändert. Die beiden Original-Logos stammen aus `ShareOS/src/shareos-core/www/` (ShareOS, GPLv2).
 
-## Automatische Builds herunterladen
+## Downloads
 
-Unter **[Actions → Desktop builds](https://github.com/UniqueDroid/ShareOS-Desktop/actions/workflows/build.yml)** entstehen bei jedem Push nach `main`, bei Pull Requests und bei manuellem Start native Test-Builds für:
-
-- Linux x64
-- Windows x64 (`.exe`)
-- macOS Apple Silicon (`.app`)
-- macOS Intel (`.app`)
-
-Einen erfolgreichen Lauf öffnen und unten unter **Artifacts** das passende Paket herunterladen. Dafür ist eine GitHub-Anmeldung erforderlich. Das Download-ZIP enthält ein Plattform-Archiv samt SHA-256-Prüfsumme. Nach dem Entpacken ist zum Starten kein Rust nötig. Die Artefakte bleiben 30 Tage verfügbar. Es werden keine Releases angelegt; Windows-Pakete sind nicht signiert, macOS-Pakete nur ad-hoc signiert und nicht notarisiert. Details: [Builds herunterladen](docs/INSTALL.md#automatische-github-builds-herunterladen).
+Fertige Pakete für **Linux x64**, **Windows x64**, **macOS Apple Silicon** und **macOS Intel** stehen unter **[Releases](https://github.com/UniqueDroid/ShareOS-Desktop/releases)** bereit, sobald die Builds der jeweiligen Version abgeschlossen sind. Zum Starten ist kein Rust nötig. Hinweise zum Starten: [Installation](docs/INSTALL.md#fertige-pakete).
 
 ## Schnell installieren und unter Windows testen
 
