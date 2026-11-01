@@ -1,6 +1,32 @@
 # ShareOS Desktop installieren und testen
 
-ShareOS Desktop wird derzeit aus Rust-Quellcode gebaut. Es gibt noch keinen signierten Windows-Installer und keine vorgefertigte Linux-Version. Die App verändert keine NAS-Firmware. Installation und Updates benötigen GitHub-Zugriff; der spätere NAS-Zugriff läuft direkt im eigenen Netzwerk.
+ShareOS Desktop kann aus Rust-Quellcode gebaut oder als automatischer Test-Build aus GitHub Actions heruntergeladen werden. Es gibt noch keinen signierten Windows-Installer. Die App verändert keine NAS-Firmware. Installation und Updates benötigen GitHub-Zugriff; der spätere NAS-Zugriff läuft direkt im eigenen Netzwerk.
+
+## Automatische GitHub-Builds herunterladen
+
+1. [GitHub Actions – Desktop builds](https://github.com/UniqueDroid/ShareOS-Desktop/actions/workflows/build.yml) öffnen.
+2. Einen Lauf mit grünem Status auswählen, bevorzugt den neuesten für `main`.
+3. Unten unter **Artifacts** das passende Paket herunterladen (GitHub-Anmeldung erforderlich):
+   - `ShareOS-Desktop-linux-x64`: Linux x86_64, gebaut auf Ubuntu 22.04.
+   - `ShareOS-Desktop-windows-x64`: Windows x64 / MSVC.
+   - `ShareOS-Desktop-macos-apple-silicon`: macOS ARM64 (M1 und neuer).
+   - `ShareOS-Desktop-macos-intel`: macOS Intel x86_64.
+4. Das GitHub-Download-ZIP und anschließend das enthaltene Plattform-Archiv entpacken. Es enthält das Programm, `STARTEN.txt`, Build-Informationen, Lizenz und Icon. Die Datei neben dem Archiv enthält dessen SHA-256-Prüfsumme.
+
+**Windows:** `shareos-desktop.exe` starten. Rust und Visual Studio sind für diesen fertigen Build nicht nötig.
+
+**Linux:** `shareos-desktop` ausführbar machen und starten:
+
+```sh
+chmod +x shareos-desktop
+./shareos-desktop
+```
+
+Die üblichen X11/Wayland/OpenGL-Laufzeitbibliotheken des Systems werden weiterhin benötigt. Für den Anwendungsmenü-Eintrag kann alternativ der unten beschriebene curl-Installer verwendet werden.
+
+**macOS:** `ShareOS Desktop.app` nach Programme kopieren und starten. Die App ist ad-hoc signiert, aber nicht mit einem Apple-Entwicklerzertifikat signiert oder notarisiert; macOS kann deshalb eine Sicherheitsmeldung anzeigen. Build-Ziel ist macOS 11 oder neuer; ein erfolgreicher Build ersetzt keine Prüfung der Bedienung auf jeder macOS-Version.
+
+Die CI führt Formatprüfung, Rust-Tests, Clippy, Pakettests und einen Release-Build auf jedem Zielsystem aus. Builds benötigen keine NAS-Anmeldung und keine eigenen GitHub-Secrets. Die Pakete werden als Actions-Artefakte für 30 Tage gespeichert; es werden keine Releases erstellt. Manuell ist ein Lauf unter **Run workflow** möglich. Wenn ein neuer Push einen älteren Lauf desselben Branches ersetzt, wird der ältere abgebrochen.
 
 ## Linux: Installation per curl
 

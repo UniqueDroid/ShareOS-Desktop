@@ -1,0 +1,117 @@
+name: Desktop builds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            artifact: linux-x64
+            binary: shareos-desktop
+          - name: Windows x64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            artifact: windows-x64
+            binary: shareos-desktop.exe
+          - name: macOS Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+            platform: macos
+            artifact: macos-apple-silicon
+            binary: shareos-desktop
+          - name: macOS Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos
+            artifact: macos-intel
+            binary: shareos-desktop
+    defaults:
+      run:
+        shell: bash
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libx11-dev libxi-dev libxrandr-dev libxkbcommon-dev libgl1-mesa-dev
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - name: Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Tests
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo test --locked --target "$BUILD_TARGET"
+      - name: Clippy
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo clippy --locked --all-targets --target "$BUILD_TARGET" -- -D warnings
+      - name: Installer and packaging tests
+        run: python -m unittest discover -s tests -v
+      - name: Release build
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$BUILD_TARGET"
+      - name: Package executable
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          BUILD_PLATFORM: ${{ matrix.platform }}
+          BUILD_BINARY: ${{ matrix.binary }}
+          BUILD_COMMIT: ${{ github.sha }}
+        run: >-
+          python scripts/package-build.py
+          --platform "$BUILD_PLATFORM"
+          --target "$BUILD_TARGET"
+          --binary "target/$BUILD_TARGET/release/$BUILD_BINARY"
+          --commit "$BUILD_COMMIT"
+          --output dist
+      - name: Upload build
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ShareOS-Desktop-${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallerTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux installer")
     def test_bootstrap_from_outside_checkout_and_reinstall(self):
         with tempfile.TemporaryDirectory(prefix="shareos-bootstrap-test-") as name:
             stage = Path(name)

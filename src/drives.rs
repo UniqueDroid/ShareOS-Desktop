@@ -59,7 +59,9 @@ pub fn connect(address: &str, share: &str, drive: &str, user: &str) -> Result<St
         ensure!(status.status.success(),"SMB-Dateimanager konnte nicht geöffnet werden: {}. Unter KDE kio-extras, sonst GVfs-SMB und den Standard-Dateimanager prüfen.",String::from_utf8_lossy(&status.stderr).trim());
     }
     #[cfg(target_os = "windows")]
-    return Ok("Netzlaufwerk verbunden.".into());
+    {
+        Ok("Netzlaufwerk verbunden.".into())
+    }
     #[cfg(not(target_os = "windows"))]
     Ok("Freigabe im System-Dateimanager geöffnet. Dort mit deinem SMB-Konto anmelden.".into())
 }
