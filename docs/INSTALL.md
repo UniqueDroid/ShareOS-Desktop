@@ -113,7 +113,7 @@ The native executable is written to `target\release`. A native Windows CI build 
 - Connect a network drive using an unused drive letter. Windows uses its own SMB authentication; save credentials in Windows Credential Manager if needed.
 - As an administrator, check the embedded terminal and settings backup export.
 - Box setup: on a freshly installed box, open "Box einrichten", enter the address and click "Box prüfen". Set a new administrator password, take over the existing data partition and create a regular user. Then log in with that user.
-- Alt-F switch (only when you really want to replace Alt-F; this flashes the box): in "Box finden", search, click "auf ShareOS umstellen" next to the Alt-F box, log in with the Alt-F password, choose the model and let the app load the firmware. Read the confirmation page (Alt-F's check result, firmware version, SHA-256) before ticking "Verstanden" and clicking "Jetzt umstellen". Do not switch the box off; the app waits up to 30 minutes until ShareOS answers and then continues with the box setup.
+- Alt-F switch (only when you really want to replace Alt-F; this flashes the box): in "Verbinden", open "Box im lokalen Netzwerk suchen", search, click "auf ShareOS umstellen" next to the Alt-F box, log in with the Alt-F password, choose the model and let the app load the firmware. Read the confirmation page (Alt-F's check result, firmware version, SHA-256) before ticking "Verstanden" and clicking "Jetzt umstellen". Do not switch the box off; the app waits up to 30 minutes until ShareOS answers and then continues with the box setup.
 
 To update an existing checkout:
 

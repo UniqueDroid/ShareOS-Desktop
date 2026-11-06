@@ -34,6 +34,8 @@ enum Stage {
     AltFirmware,
     AltConfirm,
     AltFlashing,
+    /// HTTPS with an unknown (self-signed) certificate: confirm it first
+    Certificate,
 }
 
 /// Results of the background jobs; a job can send several (progress lines).
@@ -43,6 +45,8 @@ enum Step {
     AltF,
     Unknown,
     LoggedIn(Box<Nas>, Value, Vec<String>, Value),
+    /// the box certificate is not trusted yet
+    Untrusted(tls::Certificate),
     /// logged in with the factory password "shareos"
     Default(Box<Step>),
     Applied(Vec<String>),
@@ -69,8 +73,8 @@ type DiskJobs = (Vec<(String, String)>, Option<Value>);
 /// What the main window should do after the wizard.
 pub enum Outcome {
     None,
-    /// open "Box finden" with this address and user
-    Login(String, String),
+    /// open "Verbinden" with this address and user
+    Login(String, String, Option<tls::Certificate>),
 }
 
 pub struct Setup {
@@ -117,6 +121,9 @@ pub struct Setup {
     keep_beta: Option<bool>,
     /// check the box as soon as the tab is shown (opened from the search)
     auto_detect: bool,
+    /// confirmed certificate of an HTTPS box (pinned like in "Verbinden")
+    trusted: Option<tls::Certificate>,
+    certificate: Option<tls::Certificate>,
 }
 
 impl Setup {
@@ -160,6 +167,8 @@ impl Setup {
             default_password: false,
             keep_beta: None,
             auto_detect: false,
+            trusted: None,
+            certificate: None,
         }
     }
     /// Opened from the box search: check the address right away.
@@ -222,6 +231,10 @@ impl Setup {
             }
             Step::ShareOs => self.stage = Stage::ShareOsPassword,
             Step::AltF => self.stage = Stage::AltLogin,
+            Step::Untrusted(cert) => {
+                self.certificate = Some(cert);
+                self.stage = Stage::Certificate;
+            }
             Step::Default(inner) => {
                 self.default_password = true;
                 self.apply(*inner, ctx);
@@ -314,15 +327,24 @@ impl Setup {
                 self.root_password = "shareos".into();
                 self.keep_beta = Some(self.beta);
                 self.stage = Stage::ShareOsPassword;
-                self.login(ctx, None);
+                self.login(ctx);
             }
         }
     }
 
     /* ---------- jobs ---------- */
 
-    fn detect(&mut self, ctx: &egui::Context, trusted: Option<tls::Certificate>) {
+    /// the confirmed certificate, only for the address it was confirmed for
+    fn trust(&self) -> Option<tls::Certificate> {
+        let origin = crate::nas::base_url(&self.address)
+            .ok()?
+            .origin()
+            .ascii_serialization();
+        self.trusted.clone().filter(|cert| cert.origin == origin)
+    }
+    fn detect(&mut self, ctx: &egui::Context) {
         let address = self.address.clone();
+        let trusted = self.trust();
         self.log.clear();
         self.default_password = false;
         self.run(ctx, move |_| {
@@ -336,6 +358,9 @@ impl Setup {
                 // a new box still has the password "shareos": try it first
                 return match Nas::connect(&address, "root".into(), "shareos", trusted.as_ref()) {
                     Ok(nas) => Ok(Step::Default(Box::new(logged_in(nas)?))),
+                    Err(e) if trusted.is_none() && tls::is_certificate_error(&e) => {
+                        Ok(Step::Untrusted(tls::inspect(&address)?))
+                    }
                     Err(_) => Ok(Step::ShareOs),
                 };
             }
@@ -345,17 +370,19 @@ impl Setup {
             Ok(Step::Unknown)
         });
     }
-    fn login(&mut self, ctx: &egui::Context, trusted: Option<tls::Certificate>) {
+    fn login(&mut self, ctx: &egui::Context) {
         let address = self.address.clone();
+        let trusted = self.trust();
         let password = self.root_password.clone();
         self.default_password = password == "shareos";
         self.run(ctx, move |_| {
-            logged_in(Nas::connect(
-                &address,
-                "root".into(),
-                &password,
-                trusted.as_ref(),
-            )?)
+            match Nas::connect(&address, "root".into(), &password, trusted.as_ref()) {
+                Ok(nas) => logged_in(nas),
+                Err(e) if trusted.is_none() && tls::is_certificate_error(&e) => {
+                    Ok(Step::Untrusted(tls::inspect(&address)?))
+                }
+                Err(e) => Err(e),
+            }
         });
     }
     fn load_storage(&mut self, ctx: &egui::Context) {
@@ -486,9 +513,13 @@ impl Setup {
         trusted: Option<tls::Certificate>,
     ) -> Outcome {
         self.poll(ctx);
+        // a certificate already confirmed in "Verbinden" counts here too
+        if self.trusted.is_none() {
+            self.trusted = trusted;
+        }
         if self.auto_detect && self.stage == Stage::Start && !self.busy() {
             self.auto_detect = false;
-            self.detect(ctx, trusted.clone());
+            self.detect(ctx);
         }
         let mut outcome = Outcome::None;
         text(
@@ -514,7 +545,7 @@ impl Setup {
             Stage::Start => {
                 small(ui, "Neue Boxen mit ShareOS melden sich mit dem Passwort „shareos“; Alt-F-Boxen über http://.");
                 if ui.button("Box prüfen").clicked() {
-                    self.detect(ctx, trusted.clone());
+                    self.detect(ctx);
                 }
             }
             Stage::ShareOsPassword => {
@@ -524,7 +555,7 @@ impl Setup {
                     ui.add(crate::text_input(&mut self.root_password).password(true).desired_width(240.0));
                 });
                 if ui.button("Anmelden").clicked() {
-                    self.login(ctx, trusted.clone());
+                    self.login(ctx);
                 }
             }
             Stage::Basics => self.basics_ui(ui, ctx),
@@ -547,7 +578,22 @@ impl Setup {
                 small(ui, "Mit dem neuen Benutzer anmelden, um Dateien zu sehen und das Netzlaufwerk zu verbinden.");
                 if ui.button("Zur Anmeldung").clicked() {
                     let user = if self.user.is_empty() { "root".to_string() } else { self.user.clone() };
-                    outcome = Outcome::Login(self.address.clone(), user);
+                    outcome = Outcome::Login(self.address.clone(), user, self.trust());
+                }
+            }
+            Stage::Certificate => {
+                if let Some(cert) = self.certificate.clone() {
+                    text(ui, "Die Box verwendet ein eigenes HTTPS-Zertifikat. Fingerabdruck mit der Box vergleichen (Browser: Schloss-Symbol → Zertifikat) und dann vertrauen:");
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(cert.fingerprint()).monospace()).wrap(),
+                    );
+                    small(ui, "Das Vertrauen gilt nur für diese Adresse und genau dieses Zertifikat. Alternativ die Box über http:// einrichten.");
+                    if ui.button("Zertifikat vertrauen und weiter").clicked() {
+                        self.trusted = Some(cert);
+                        self.certificate = None;
+                        self.stage = Stage::Start;
+                        self.detect(ctx);
+                    }
                 }
             }
             Stage::AltLogin => {
