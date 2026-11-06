@@ -1,4 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod altf;
 mod backup;
 mod browser;
 mod drives;
@@ -7,6 +8,7 @@ mod file_ops;
 mod linux_window;
 mod nas;
 mod preferences;
+mod setup;
 mod terminal;
 mod theme;
 mod tls;
@@ -23,16 +25,20 @@ use std::{
     },
 };
 
-const TABS: [&str; 6] = [
+const TABS: [&str; 7] = [
     "Box finden",
     "Dateien",
     "Netzlaufwerke",
     "Dateibackup",
     "Box-Einstellungen",
     "Terminal",
+    "Box einrichten",
 ];
+/// order of the tabs in the header ("Box einrichten" next to "Box finden")
+const TAB_ORDER: [usize; 7] = [0, 6, 1, 2, 3, 4, 5];
+const SETUP_TAB: usize = 6;
 fn tab_visible(index: usize, logged_in: bool, admin: bool) -> bool {
-    index == 0 || (logged_in && (index != 5 || admin))
+    index == 0 || index == SETUP_TAB || (logged_in && (index != 5 || admin))
 }
 enum FileAction {
     Copy(Vec<String>),
@@ -51,7 +57,7 @@ struct PendingFileDialog {
 }
 enum Change {
     Message(String),
-    Found(Vec<String>),
+    Found(Vec<nas::Found>),
     Certificate(tls::Certificate),
     Login(Nas, Vec<Root>),
     List(Vec<Entry>, bool),
@@ -82,7 +88,7 @@ struct App {
     root: String,
     path: String,
     entries: Vec<Entry>,
-    found: Vec<String>,
+    found: Vec<nas::Found>,
     local: String,
     file_filter: String,
     file_selection: std::collections::BTreeSet<String>,
@@ -119,6 +125,7 @@ struct App {
     remember_address: bool,
     remember_certificate: bool,
     terminal: Option<terminal::Session>,
+    setup: setup::Setup,
 }
 impl App {
     fn new(ctx: &egui::Context) -> Self {
@@ -147,6 +154,10 @@ impl App {
             ),
         };
         let remember_address = saved.address.is_some();
+        let remembered_address = saved
+            .address
+            .clone()
+            .unwrap_or_else(|| "http://192.168.0.32".into());
         let remember_certificate = saved.certificate.is_some();
         Self {
             tab: 0,
@@ -202,6 +213,7 @@ impl App {
             remember_address,
             remember_certificate,
             terminal: None,
+            setup: setup::Setup::new(&remembered_address),
         }
     }
     fn start(
@@ -390,13 +402,45 @@ impl App {
                 Ok(Change::Found(nas::discover(&subnet, &configured)?))
             });
         }
-        for address in &self.found {
-            if ui
-                .selectable_label(self.address == *address, address)
-                .clicked()
-            {
-                self.address = address.clone();
+        let mut setup_address = None;
+        for found in &self.found {
+            ui.horizontal(|ui| {
+                let label = if found.altf {
+                    format!("{} · Alt-F", found.address)
+                } else {
+                    found.address.clone()
+                };
+                if ui
+                    .selectable_label(self.address == found.address, label)
+                    .clicked()
+                {
+                    if found.altf {
+                        setup_address = Some(found.address.clone());
+                    } else {
+                        self.address = found.address.clone();
+                    }
+                }
+                let (text, hint) = if found.altf {
+                    (
+                        "auf ShareOS umstellen",
+                        "Diese Box läuft mit Alt-F: mit dem Assistenten auf ShareOS umstellen",
+                    )
+                } else {
+                    (
+                        "einrichten",
+                        "Neue Box einrichten (Passwort, Name, Platten, erster Benutzer)",
+                    )
+                };
+                if ui.small_button(text).on_hover_text(hint).clicked() {
+                    setup_address = Some(found.address.clone());
+                }
+            });
+        }
+        if let Some(address) = setup_address {
+            if !self.setup.busy() {
+                self.setup = setup::Setup::detected(&address);
             }
+            self.tab = SETUP_TAB;
         }
         ui.separator();
         field(ui, "Box-Adresse", &mut self.address);
@@ -1378,7 +1422,8 @@ impl App {
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(ctx, |ui| {
-                ui.set_max_width(1240.0);
+                // never wider than the window (set_max_width can also widen)
+                ui.set_max_width(ui.available_width().min(1240.0));
                 let actions_width = if self.nas.is_some() { 216.0 } else { 100.0 };
                 let brand_width =
                     (ui.available_width() - actions_width - ui.spacing().item_spacing.x).max(120.0);
@@ -1482,7 +1527,8 @@ impl App {
                 ui.separator();
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
-                    for (i, tab) in TABS.iter().enumerate() {
+                    for i in TAB_ORDER {
+                        let tab = &TABS[i];
                         if !tab_visible(
                             i,
                             self.nas.is_some(),
@@ -1541,7 +1587,8 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(24, 12)),
             )
             .show(ctx, |ui| {
-                ui.set_max_width(1240.0);
+                // never wider than the window (set_max_width can also widen)
+                ui.set_max_width(ui.available_width().min(1240.0));
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Frame::new()
                         .fill(p.panel)
@@ -1549,7 +1596,7 @@ impl App {
                         .corner_radius(12)
                         .inner_margin(18)
                         .show(ui, |ui| {
-                            ui.set_min_width((ui.available_width() - 36.0).max(0.0));
+                            ui.set_min_width(ui.available_width());
                             ui.label(
                                 egui::RichText::new(TABS[self.tab].to_uppercase())
                                     .size(15.0)
@@ -1564,6 +1611,17 @@ impl App {
                                 2 => self.network(ui, ctx),
                                 3 => self.backups(ui, ctx),
                                 4 => self.settings(ui, ctx),
+                                SETUP_TAB => {
+                                    let trusted = self.trusted_certificate.clone();
+                                    if let setup::Outcome::Login(address, user) =
+                                        self.setup.ui(ui, ctx, &p, trusted)
+                                    {
+                                        self.address = address;
+                                        self.user = user;
+                                        self.tab = 0;
+                                        self.status = "Box eingerichtet. Jetzt mit dem neuen Benutzer anmelden.".into();
+                                    }
+                                }
                                 _ => self.terminal(ui, ctx),
                             });
                         });
@@ -1653,9 +1711,13 @@ mod ui_tests {
                 .filter(|index| tab_visible(*index, logged_in, admin))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(visible(false, false), vec![0]);
-        assert_eq!(visible(true, false), vec![0, 1, 2, 3, 4]);
-        assert_eq!(visible(true, true), vec![0, 1, 2, 3, 4, 5]);
+        // the setup wizard works before a login (new boxes, Alt-F boxes)
+        assert_eq!(visible(false, false), vec![0, SETUP_TAB]);
+        assert_eq!(visible(true, false), vec![0, 1, 2, 3, 4, SETUP_TAB]);
+        assert_eq!(visible(true, true), vec![0, 1, 2, 3, 4, 5, SETUP_TAB]);
+        let mut order = TAB_ORDER.to_vec();
+        order.sort();
+        assert_eq!(order, (0..TABS.len()).collect::<Vec<_>>());
     }
     #[cfg(target_os = "linux")]
     #[test]
