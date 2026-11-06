@@ -8,6 +8,7 @@ mod file_ops;
 mod linux_window;
 mod nas;
 mod preferences;
+mod settings_backups;
 mod setup;
 mod terminal;
 mod theme;
@@ -67,7 +68,8 @@ enum Change {
     Certificate(tls::Certificate),
     /// login refused an unknown certificate: show it for confirmation
     Untrusted(tls::Certificate, String),
-    Login(Nas, Vec<Root>),
+    /// with the recovery status of the box (admins, newer firmware)
+    Login(Nas, Vec<Root>, Option<Value>),
     List(Vec<Entry>, bool),
     Snapshot(backup::Snapshot),
     Catalog(String, backup::Catalog),
@@ -80,7 +82,10 @@ enum Change {
     Reload(String),
     FileDrop(file_drop::Report),
     Shares(Vec<nas::Share>),
-    SettingsFile(String, String),
+    /// settings backups in the folder, and what the box could add to one
+    Backups(Vec<settings_backups::BackupFile>, Option<Value>),
+    /// restore applied or recovery finished: the box restarts
+    Restarting(String),
 }
 struct App {
     tab: usize,
@@ -126,6 +131,17 @@ struct App {
     settings_file: String,
     settings_password: String,
     preview: Option<(Value, String, String)>,
+    /// settings backups on this computer
+    settings_dir: String,
+    settings_list: Vec<settings_backups::BackupFile>,
+    settings_all: bool,
+    settings_offer: Option<Value>,
+    settings_cert: bool,
+    settings_ca: bool,
+    settings_loaded: bool,
+    /// recovery mode of the box (after a restore): its status and the choice
+    recovery: Option<Value>,
+    recovery_pick: std::collections::BTreeSet<String>,
     confirm: bool,
     status: String,
     job: Option<Receiver<Result<Change>>>,
@@ -218,6 +234,19 @@ impl App {
             settings_file: String::new(),
             settings_password: String::new(),
             preview: None,
+            settings_dir: saved
+                .backups
+                .clone()
+                .or_else(|| settings_backups::default_dir().map(|d| d.display().to_string()))
+                .unwrap_or_default(),
+            settings_list: vec![],
+            settings_all: false,
+            settings_offer: None,
+            settings_cert: true,
+            settings_ca: true,
+            settings_loaded: false,
+            recovery: None,
+            recovery_pick: Default::default(),
             confirm: false,
             status: load_error
                 .unwrap_or_else(|| "Box suchen oder Adresse eingeben und anmelden.".into()),
@@ -274,9 +303,11 @@ impl App {
         } else {
             None
         };
+        let backups = self.custom_settings_dir();
         preferences::Preferences {
             address,
             certificate: certificate.clone(),
+            backups,
         }
         .save(&path)?;
         self.saved_certificate = certificate;
@@ -329,10 +360,6 @@ impl App {
                                 }
                                 self.status = "Verfügbare Freigaben aktualisiert.".into();
                             }
-                            Change::SettingsFile(path, message) => {
-                                self.settings_file = path;
-                                self.status = message;
-                            }
                             Change::FileDrop(report) => {
                                 let message = report.summary();
                                 if report.uploaded > 0 {
@@ -365,7 +392,7 @@ impl App {
                                 self.certificate = Some(certificate);
                                 self.status = "Zertifikat geladen. Fingerabdruck vor dem Vertrauen mit der Box vergleichen.".into();
                             }
-                            Change::Login(nas, roots) => {
+                            Change::Login(nas, roots, recovery) => {
                                 self.selected = vec![!nas.admin; roots.len()];
                                 self.root =
                                     roots.first().map(|x| x.name.clone()).unwrap_or_default();
@@ -380,6 +407,35 @@ impl App {
                                     self.refresh(ctx);
                                 }
                                 self.status = "Angemeldet. Dateien werden geladen.".into();
+                                self.settings_loaded = false;
+                                self.settings_offer = None;
+                                self.recovery = None;
+                                if let Some(r) = recovery.filter(|r| r["active"] == true) {
+                                    self.recovery_pick = recovery_defaults(&r);
+                                    self.recovery = Some(r);
+                                    self.tab = 4;
+                                    self.status = "Die Box ist im Recovery-Modus: auswählen, was aus der Sicherung zurückkommen soll.".into();
+                                }
+                            }
+                            Change::Backups(list, offer) => {
+                                self.settings_list = list;
+                                if offer.is_some() {
+                                    self.settings_offer = offer;
+                                }
+                                self.settings_loaded = true;
+                            }
+                            Change::Restarting(message) => {
+                                self.file_selection.clear();
+                                self.file_clipboard = None;
+                                self.file_dialog = None;
+                                self.terminal = None;
+                                self.nas = None;
+                                self.recovery = None;
+                                self.preview = None;
+                                self.roots.clear();
+                                self.entries.clear();
+                                self.tab = 0;
+                                self.status = message;
                             }
                             Change::List(entries, truncated) => {
                                 self.entries = entries;
@@ -604,7 +660,7 @@ impl App {
                 let result=self.save_connection();self.status=match result {Ok(())=>"Verbindungseinstellungen gespeichert.".into(),Err(error)=>format!("Fehler: {error}")};
             }
             if ui.button("Gespeicherte Verbindung vergessen").clicked() {
-                let result=preferences::Preferences::location().map(|path|preferences::Preferences::default().save(&path));
+                let backups=self.custom_settings_dir();let result=preferences::Preferences::location().map(|path|preferences::Preferences{backups,..Default::default()}.save(&path));
                 match result {Some(Err(error))=>self.status=format!("Fehler: {error}"),_=>{self.remember_address=false;self.remember_certificate=false;self.trusted_certificate=None;self.saved_certificate=None;self.status="Gespeicherte Verbindung gelöscht.".into();}}
             }
         });
@@ -641,7 +697,15 @@ impl App {
                         return Err(error);
                     }
                 };
-                Ok(Change::Login(nas, roots))
+                // a box in recovery mode (after restoring settings) asks the admin
+                let recovery = nas
+                    .admin
+                    .then(|| {
+                        nas.rpc("shareos.recovery", "status", serde_json::json!({}))
+                            .ok()
+                    })
+                    .flatten();
+                Ok(Change::Login(nas, roots, recovery))
             });
         }
         if self.nas.is_some() {
@@ -1375,26 +1439,119 @@ impl App {
         }
         ui.small("SHA-256-Prüfung und Überschreibschutz bleiben aktiv. Wiederhergestellte Dateien landen im gewählten lokalen Ziel.");
     }
+    /// the backups folder when it is not the default one (for the preferences)
+    fn custom_settings_dir(&self) -> Option<String> {
+        let default = settings_backups::default_dir().map(|d| d.display().to_string());
+        (!self.settings_dir.trim().is_empty() && Some(&self.settings_dir) != default.as_ref())
+            .then(|| self.settings_dir.clone())
+    }
+    fn load_backups(&mut self, ctx: &egui::Context, nas: Option<Nas>) {
+        let dir = PathBuf::from(&self.settings_dir);
+        self.settings_loaded = true;
+        self.start(ctx, move || {
+            let list = settings_backups::scan(&dir)?;
+            // older firmware has no "offer": no certificate/CA options then
+            let offer = nas.and_then(|nas| {
+                nas.rpc("shareos.backup", "offer", serde_json::json!({}))
+                    .ok()
+            });
+            Ok(Change::Backups(list, offer))
+        });
+    }
     fn settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let Some(nas) = self.nas.clone().filter(|nas| nas.admin) else {
             ui.label("Für Box-Einstellungen mit einem Administratorkonto anmelden.");
             return;
         };
+        if self.recovery.is_some() {
+            self.recovery_ui(ui, ctx, &nas);
+            return;
+        }
+        if !self.settings_loaded && self.job.is_none() {
+            self.load_backups(ctx, Some(nas.clone()));
+        }
+        let p = theme::palette(self.dark);
         ui.label(egui::RichText::new("Einstellungen sichern").strong());
         ui.horizontal(|ui| {
-            ui.label("Sicherungskennwort (optional)");
+            ui.label("Sicherungsordner");
+            ui.add(text_input(&mut self.settings_dir).desired_width(380.0));
+            if ui.button("Ordner wählen …").clicked() {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Ordner für Einstellungs-Sicherungen")
+                    .pick_folder()
+                {
+                    self.settings_dir = dir.display().to_string();
+                    self.settings_loaded = false;
+                    if self.remember_address {
+                        let _ = self.save_connection();
+                    }
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Sicherungskennwort");
             ui.add(text_input(&mut self.settings_password).password(true));
         });
-        ui.small("Ohne Kennwort wird unverschlüsselt gesichert. Für Verschlüsselung mindestens 6 Zeichen verwenden.");
-        if ui.button("Box-Einstellungen sichern …").clicked() {
+        let encrypted = !self.settings_password.is_empty();
+        let offer = self.settings_offer.clone().unwrap_or(Value::Null);
+        if offer["certificate"] == true {
+            // without a password nothing with keys goes in: shown unticked
+            let mut off = false;
+            let value = if encrypted {
+                &mut self.settings_cert
+            } else {
+                &mut off
+            };
+            ui.add_enabled(
+                encrypted,
+                egui::Checkbox::new(value, "HTTPS-Zertifikat mitsichern (mit Schlüssel)"),
+            );
+        }
+        if offer["ca"] == true {
+            let n = offer["ca_certs"].as_u64().unwrap_or(0);
+            let label = if n > 0 {
+                format!("Eigene CA mitsichern ({n} ausgestellte Zertifikate)")
+            } else {
+                "Eigene CA mitsichern".into()
+            };
+            let mut off = false;
+            let value = if encrypted {
+                &mut self.settings_ca
+            } else {
+                &mut off
+            };
+            ui.add_enabled(encrypted, egui::Checkbox::new(value, label));
+        }
+        ui.add(egui::Label::new(egui::RichText::new(if encrypted {
+            "Verschlüsselt mit AES-256; das Kennwort wird zum Wiederherstellen gebraucht."
+        } else {
+            "Ohne Kennwort ist die Sicherung lesbar (Passwörter als Hash) und enthält keine Schlüssel. Für Zertifikat und CA ein Kennwort mit mindestens 6 Zeichen eingeben."
+        }).small()).wrap());
+        if ui.button("Jetzt sichern").clicked() {
             let nas = nas.clone();
             let password = std::mem::take(&mut self.settings_password);
+            let (cert, ca) = (
+                encrypted && self.settings_cert && offer["certificate"] == true,
+                encrypted && self.settings_ca && offer["ca"] == true,
+            );
+            let dir = PathBuf::from(&self.settings_dir);
+            self.settings_loaded = false;
             self.start(ctx, move || {
                 anyhow::ensure!(
                     password.is_empty() || password.chars().count() >= 6,
                     "Das Sicherungskennwort braucht mindestens 6 Zeichen."
                 );
-                let data = nas.settings(&password)?;
+                anyhow::ensure!(
+                    !dir.as_os_str().is_empty(),
+                    "Zuerst einen Sicherungsordner wählen."
+                );
+                std::fs::create_dir_all(&dir).with_context(|| {
+                    format!(
+                        "Sicherungsordner konnte nicht angelegt werden: {}",
+                        dir.display()
+                    )
+                })?;
+                let data = nas.settings(&password, cert, ca)?;
                 let content = data["content"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("Sicherungsinhalt fehlt"))?;
@@ -1402,85 +1559,422 @@ impl App {
                     .as_str()
                     .filter(|name| backup::safe_name(name))
                     .unwrap_or("shareos-einstellungen.json");
-                let Some(target) = rfd::FileDialog::new()
-                    .set_title("Box-Einstellungen sichern")
-                    .add_filter("ShareOS-Sicherung", &["json"])
-                    .set_file_name(name)
-                    .save_file()
-                else {
-                    return Ok(Change::Message("Sicherung abgebrochen.".into()));
-                };
+                let target = settings_backups::free_name(&dir, name);
                 nas::save_settings_file(content, &target)?;
-                Ok(Change::SettingsFile(
-                    target.display().to_string(),
-                    format!("Box-Einstellungen gesichert: {}", target.display()),
-                ))
+                Ok(Change::Message(format!(
+                    "Box-Einstellungen gesichert: {}",
+                    target.display()
+                )))
             });
         }
         ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Sicherungen auf diesem Rechner").strong());
+            if ui.small_button("Aktualisieren").clicked() {
+                self.settings_loaded = false;
+            }
+        });
+        if self.settings_list.is_empty() {
+            ui.small("Noch keine Sicherung in diesem Ordner.");
+        }
+        let shown = if self.settings_all {
+            self.settings_list.len()
+        } else {
+            self.settings_list.len().min(3)
+        };
+        let mut pick = None;
+        egui::Grid::new("settings-backups")
+            .num_columns(5)
+            .spacing([18.0, 8.0])
+            .striped(true)
+            .show(ui, |ui| {
+                if !self.settings_list.is_empty() {
+                    for h in ["DATUM", "BOX", "VERSION", "INHALT", ""] {
+                        ui.label(egui::RichText::new(h).small().color(p.muted));
+                    }
+                    ui.end_row();
+                }
+                for b in self.settings_list.iter().take(shown) {
+                    ui.label(settings_backups::date(b.created))
+                        .on_hover_text(&b.name);
+                    ui.label(if b.host.is_empty() { "–" } else { &b.host });
+                    ui.label(if b.version.is_empty() {
+                        "–"
+                    } else {
+                        &b.version
+                    });
+                    let mut tags = vec![if b.encrypted {
+                        "verschlüsselt"
+                    } else {
+                        "unverschlüsselt"
+                    }];
+                    if b.certificate == Some(true) {
+                        tags.push("Zertifikat");
+                    }
+                    if b.ca == Some(true) {
+                        tags.push("CA");
+                    }
+                    ui.label(egui::RichText::new(tags.join(" · ")).small());
+                    if ui.small_button("Wiederherstellen …").clicked() {
+                        pick = Some(b.path.display().to_string());
+                    }
+                    ui.end_row();
+                }
+            });
+        if self.settings_list.len() > 3 {
+            let text = if self.settings_all {
+                "Weniger anzeigen".to_string()
+            } else {
+                format!("Alle anzeigen ({})", self.settings_list.len())
+            };
+            if ui.small_button(text).clicked() {
+                self.settings_all = !self.settings_all;
+            }
+        }
+        if ui.small_button("Andere Sicherungsdatei wählen …").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("ShareOS-Sicherung", &["json"])
+                .pick_file()
+            {
+                pick = Some(path.display().to_string());
+            }
+        }
+        if let Some(path) = pick {
+            self.settings_file = path;
+            self.preview = None;
+            self.confirm = false;
+        }
+        if self.settings_file.is_empty() {
+            return;
+        }
+        ui.separator();
         ui.label(egui::RichText::new("Einstellungen wiederherstellen").strong());
-        field(ui, "Sicherungsdatei", &mut self.settings_file);
-        if ui.button("Sicherungsdatei auswählen …").clicked() {
-            self.preview = None;
-            self.start(ctx, move || {
-                let Some(path) = rfd::FileDialog::new()
-                    .add_filter("ShareOS-Sicherung", &["json"])
-                    .pick_file()
-                else {
-                    return Ok(Change::Message("Auswahl abgebrochen.".into()));
-                };
-                Ok(Change::SettingsFile(
-                    path.display().to_string(),
-                    "Sicherungsdatei ausgewählt.".into(),
-                ))
-            });
+        ui.add(
+            egui::Label::new(egui::RichText::new(&self.settings_file).monospace().small()).wrap(),
+        );
+        let encrypted_file = settings_backups::read(std::path::Path::new(&self.settings_file))
+            .is_some_and(|b| b.encrypted);
+        if self.preview.is_none() {
+            if encrypted_file {
+                ui.horizontal(|ui| {
+                    ui.label("Kennwort der Sicherung");
+                    ui.add(text_input(&mut self.settings_password).password(true));
+                });
+            }
+            if ui.button("Sicherung prüfen").clicked() && self.job.is_none() {
+                let source = PathBuf::from(&self.settings_file);
+                let password = std::mem::take(&mut self.settings_password);
+                let nas = nas.clone();
+                self.start(ctx, move || {
+                    let content = std::fs::read_to_string(source)?;
+                    let preview = nas.restore_settings(&content, &password, false)?;
+                    Ok(Change::Preview(preview, content, password))
+                });
+            }
+            return;
         }
-        if ui.button("Wiederherstellung prüfen").clicked() && self.job.is_none() {
-            self.preview = None;
-            let source = self.settings_file.clone();
-            let password = std::mem::take(&mut self.settings_password);
-            self.start(ctx, move || {
-                let path = if source.trim().is_empty() {
-                    let Some(path) = rfd::FileDialog::new()
-                        .add_filter("ShareOS-Sicherung", &["json"])
-                        .pick_file()
-                    else {
-                        return Ok(Change::Message("Prüfung abgebrochen.".into()));
-                    };
-                    path
-                } else {
-                    PathBuf::from(source)
-                };
-                let content = std::fs::read_to_string(path)?;
-                let preview = nas.restore_settings(&content, &password, false)?;
-                Ok(Change::Preview(preview, content, password))
+        let (preview, _, _) = self.preview.as_ref().unwrap();
+        let list = |v: &Value| {
+            let names: Vec<String> = v
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| {
+                    x.as_str()
+                        .map(String::from)
+                        .or_else(|| x["name"].as_str().map(String::from))
+                })
+                .collect();
+            if names.is_empty() {
+                "–".to_string()
+            } else {
+                names.join(", ")
+            }
+        };
+        let yes = |v: &Value| {
+            if v == &Value::Bool(true) {
+                "ja"
+            } else {
+                "nein"
+            }
+        };
+        egui::Grid::new("restore-preview")
+            .num_columns(2)
+            .spacing([18.0, 6.0])
+            .show(ui, |ui| {
+                let created = preview["created"]
+                    .as_i64()
+                    .map(settings_backups::date)
+                    .unwrap_or_else(|| "–".into());
+                for (k, v) in [
+                    ("Box", preview["host"].as_str().unwrap_or("–").to_string()),
+                    ("Erstellt", created),
+                    (
+                        "ShareOS",
+                        preview["version"].as_str().unwrap_or("–").to_string(),
+                    ),
+                    ("Benutzer", list(&preview["users"])),
+                    ("Gruppen", list(&preview["groups"])),
+                    ("Freigaben", list(&preview["shares"])),
+                    (
+                        "Dienste",
+                        list(&Value::Array(
+                            preview["services"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .map(|s| Value::from(service_name(s)))
+                                .collect(),
+                        )),
+                    ),
+                    ("Apps", list(&preview["apps"])),
+                    ("Zertifikat", yes(&preview["certificate"]).to_string()),
+                    (
+                        "Eigene CA",
+                        match preview["ca_certs"].as_array().map(|a| a.len()) {
+                            Some(n) if n > 0 && preview["ca"] == true => {
+                                format!("ja ({n} ausgestellte Zertifikate)")
+                            }
+                            _ => yes(&preview["ca"]).to_string(),
+                        },
+                    ),
+                ] {
+                    ui.label(egui::RichText::new(k).color(p.muted));
+                    ui.add(egui::Label::new(v).wrap());
+                    ui.end_row();
+                }
             });
-        }
-        if let Some((preview, _, _)) = &self.preview {
-            ui.separator();
-            ui.label(serde_json::to_string_pretty(preview).unwrap_or_default());
-            ui.checkbox(
-                &mut self.confirm,
-                "Aktuelle Einstellungen, Benutzer und Freigaben durch diese Sicherung ersetzen.",
-            );
+        ui.add(egui::Label::new(egui::RichText::new(
+            "Sofort übernommen werden Passwort von root, Netzwerk, Gerätename, Zeitzone, Laufwerke und die Einstellungen der Weboberfläche. Dann startet die Box neu und fragt im Recovery-Modus, was zusätzlich zurückkommen soll (Benutzer, Freigaben, Dienste, Apps, Zertifikat, CA). Daten auf den Laufwerken bleiben unberührt.",
+        ).small()).wrap());
+        ui.checkbox(
+            &mut self.confirm,
+            "Verstanden – die Box mit dieser Sicherung wiederherstellen",
+        );
+        ui.horizontal(|ui| {
             if ui
-                .add_enabled(
-                    self.confirm && self.job.is_none(),
-                    egui::Button::new("Geprüfte Einstellungen zurückspielen"),
-                )
+                .add_enabled(self.confirm && self.job.is_none(), egui::Button::new("Wiederherstellen und neu starten"))
                 .clicked()
             {
                 let (_, content, password) = self.preview.take().unwrap();
                 self.confirm = false;
-                let nas = self.nas.clone().unwrap();
                 self.terminal = None;
+                let nas = nas.clone();
                 self.start(ctx, move || {
-                    nas.restore_settings(&content, &password, true)?;
-                    let _ = nas.logout();
-                    Ok(Change::Logout)
+                    let r = nas.restore_settings(&content, &password, true)?;
+                    let _ = nas.rpc("shareos.system", "reboot", serde_json::json!({}));
+                    Ok(Change::Restarting(if r["recovery"] == true {
+                        "Die Box startet neu und ist danach im Recovery-Modus. In 1–2 Minuten mit root und dem Passwort aus der Sicherung anmelden, um auszuwählen, was zurückkommt."
+                    } else {
+                        "Einstellungen zurückgespielt. Die Box startet neu – danach erneut anmelden."
+                    }.into()))
                 });
             }
+            if ui.button("Abbrechen").clicked() {
+                self.preview = None;
+                self.settings_file.clear();
+                self.confirm = false;
+            }
+        });
+    }
+    fn recovery_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, nas: &Nas) {
+        let p = theme::palette(self.dark);
+        let r = self.recovery.clone().unwrap_or(Value::Null);
+        ui.label(
+            egui::RichText::new("RECOVERY-MODUS")
+                .strong()
+                .color(p.accent),
+        );
+        let created = r["created"]
+            .as_i64()
+            .map(settings_backups::date)
+            .unwrap_or_else(|| "–".into());
+        ui.add(
+            egui::Label::new(format!(
+                "Die Box wurde aus einer Sicherung wiederhergestellt: {} · {} · ShareOS {}",
+                r["host"].as_str().unwrap_or("–"),
+                created,
+                r["version"].as_str().unwrap_or("–")
+            ))
+            .wrap(),
+        );
+        ui.add(egui::Label::new(egui::RichText::new(
+            "Schon übernommen: Passwort von root, Netzwerk (IP-Adresse, Subnetz), Gerätename, Zeitzone, Laufwerke und die Einstellungen der Weboberfläche. Wähle, was zusätzlich zurückkommen soll:",
+        ).small()).wrap());
+        let names = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        };
+        let mut row = |ui: &mut egui::Ui, key: String, title: String, detail: String| {
+            let mut on = self.recovery_pick.contains(&key);
+            if ui
+                .checkbox(&mut on, egui::RichText::new(title).strong())
+                .changed()
+            {
+                if on {
+                    self.recovery_pick.insert(key);
+                } else {
+                    self.recovery_pick.remove(&key);
+                }
+            }
+            if !detail.is_empty() {
+                ui.indent(("rec", ui.next_auto_id()), |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(detail).small().color(p.muted)).wrap(),
+                    );
+                });
+            }
+        };
+        let (users, groups) = (names(&r["users"]), names(&r["groups"]));
+        if !users.is_empty() || !groups.is_empty() {
+            let mut detail = users.join(", ");
+            if !groups.is_empty() {
+                detail.push_str(&format!("\nGruppen: {}", groups.join(", ")));
+            }
+            row(ui, "users".into(), "Benutzer und Gruppen".into(), detail);
         }
+        let shares = names(&r["shares"]);
+        if !shares.is_empty() {
+            row(ui, "shares".into(), "Freigaben".into(), shares.join(", "));
+        }
+        for s in names(&r["services"]) {
+            row(
+                ui,
+                format!("svc:{s}"),
+                service_name(&s).into(),
+                "Einstellungen".into(),
+            );
+        }
+        let apps = r["apps"].as_array().cloned().unwrap_or_default();
+        if !apps.is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("APPS").small().color(p.muted));
+            ui.add(egui::Label::new(egui::RichText::new("Werden nach dem Neustart aus dem Store installiert (Internet nötig). Was nicht klappt, bietet die Weboberfläche unter Apps später noch einmal an.").small()).wrap());
+            for a in &apps {
+                let id = a["id"].as_str().unwrap_or_default().to_string();
+                row(
+                    ui,
+                    format!("app:{id}"),
+                    a["name"].as_str().unwrap_or(&id).to_string(),
+                    a["version"]
+                        .as_str()
+                        .map(|v| format!("Version {v}"))
+                        .unwrap_or_default(),
+                );
+            }
+        }
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("ZERTIFIKATE").small().color(p.muted));
+        if r["certificate"] == true {
+            let other = if r["cert_source"] == "ca" && r["ca"] == true {
+                "Sonst stellt die eigene CA ein neues Zertifikat aus, wenn sie wiederhergestellt wird. Browser und diese App fragen dann einmal neu nach."
+            } else {
+                "Sonst behält die Box ihr aktuelles Zertifikat. Browser und diese App fragen dann einmal neu nach."
+            };
+            row(
+                ui,
+                "certificate".into(),
+                "HTTPS-Zertifikat aus der Sicherung wiederverwenden".into(),
+                other.into(),
+            );
+        } else {
+            ui.small("Die Sicherung enthält kein HTTPS-Zertifikat – die Box behält ihr aktuelles.");
+        }
+        if r["ca"] == true {
+            let certs = names(&r["ca_certs"]);
+            let mut detail = String::new();
+            if !certs.is_empty() {
+                detail = format!("Ausgestellte Zertifikate: {}\n", certs.join(", "));
+            }
+            detail.push_str("Geräte, die der CA vertrauen, vertrauen der Box nur mit derselben CA weiter. Ohne sie musst du die neue CA dort installieren und Zertifikate für andere Geräte neu ausstellen.");
+            row(ui, "ca".into(), "Eigene CA wiederherstellen".into(), detail);
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.add_enabled(self.job.is_none(), egui::Button::new("Übernehmen und neu starten")).clicked() {
+                let args = recovery_args(&self.recovery_pick);
+                let nas = nas.clone();
+                self.start(ctx, move || {
+                    nas.rpc("shareos.recovery", "apply", args)?;
+                    let _ = nas.rpc("shareos.system", "reboot", serde_json::json!({}));
+                    Ok(Change::Restarting("Die Box übernimmt die Auswahl und startet neu. In 1–2 Minuten wieder anmelden.".into()))
+                });
+            }
+            if ui.add_enabled(self.job.is_none(), egui::Button::new("Nichts weiter übernehmen")).clicked() {
+                let nas = nas.clone();
+                self.recovery = None;
+                self.start(ctx, move || {
+                    nas.rpc("shareos.recovery", "discard", serde_json::json!({}))?;
+                    Ok(Change::Message("Recovery-Modus beendet.".into()))
+                });
+            }
+        });
+    }
+}
+/// everything in the backup is picked at first
+fn recovery_defaults(r: &Value) -> std::collections::BTreeSet<String> {
+    let mut pick = std::collections::BTreeSet::new();
+    let has = |k: &str| r[k].as_array().is_some_and(|a| !a.is_empty());
+    if has("users") || has("groups") {
+        pick.insert("users".into());
+    }
+    if has("shares") {
+        pick.insert("shares".into());
+    }
+    for s in r["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        pick.insert(format!("svc:{s}"));
+    }
+    for a in r["apps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a["id"].as_str())
+    {
+        pick.insert(format!("app:{a}"));
+    }
+    for k in ["certificate", "ca"] {
+        if r[k] == true {
+            pick.insert(k.into());
+        }
+    }
+    pick
+}
+/// the choice as arguments of shareos.recovery.apply
+fn recovery_args(pick: &std::collections::BTreeSet<String>) -> Value {
+    let with = |prefix: &str| -> Vec<String> {
+        pick.iter()
+            .filter_map(|k| k.strip_prefix(prefix).map(String::from))
+            .collect()
+    };
+    serde_json::json!({
+        "users": pick.contains("users"),
+        "shares": pick.contains("shares"),
+        "services": with("svc:"),
+        "apps": with("app:"),
+        "certificate": pick.contains("certificate"),
+        "ca": pick.contains("ca"),
+    })
+}
+fn service_name(id: &str) -> &str {
+    match id {
+        "paperless" => "Paperless-Anbindung",
+        "cloud" => "Cloud-Speicher",
+        "snapshots" => "Snapshots",
+        "dlna" => "Medienserver (DLNA)",
+        "dockerhosts" => "Docker-Hosts",
+        "zabbix" => "Zabbix-Agent",
+        "printer" => "Drucker",
+        "ups" => "USV",
+        other => other,
     }
 }
 fn text_input(value: &mut String) -> egui::TextEdit<'_> {
@@ -1751,6 +2245,8 @@ impl App {
     }
 }
 fn main() -> eframe::Result {
+    // before any other thread exists (see settings_backups)
+    settings_backups::init_local_offset();
     let image = image::load_from_memory(include_bytes!("../assets/icon-512.png"))
         .unwrap()
         .to_rgba8();
@@ -1965,9 +2461,35 @@ mod ui_tests {
             {"name":"Urlaub.jpg","type":"file","size":123456}
         ]))
         .unwrap();
-        for dark in [true, false] {
+        // the backups folder is read in the background: not in this test
+        app.settings_loaded = true;
+        app.settings_list = vec![settings_backups::BackupFile {
+            path: "b.json".into(),
+            name: "b.json".into(),
+            host: "nas".into(),
+            version: "0.2.0-beta.21".into(),
+            created: 1_762_464_000,
+            encrypted: true,
+            certificate: None,
+            ca: None,
+        }];
+        for (dark, recovery) in [(true, false), (false, false), (true, true)] {
             app.dark = dark;
             theme::apply(&ctx, dark);
+            app.recovery = recovery.then(|| {
+                serde_json::json!({"active": true, "host": "nas", "created": 1_762_464_000, "users": ["jan"],
+                    "groups": ["familie"], "shares": ["fotos"], "services": ["zabbix"],
+                    "apps": [{"id": "webpad", "name": "Webpad", "version": "1.2.0"}],
+                    "certificate": true, "cert_source": "ca", "ca": true, "ca_certs": ["drucker"]})
+            });
+            if let Some(r) = &app.recovery {
+                app.recovery_pick = recovery_defaults(r);
+                assert_eq!(
+                    recovery_args(&app.recovery_pick),
+                    serde_json::json!({"users": true, "shares": true, "services": ["zabbix"],
+                        "apps": ["webpad"], "certificate": true, "ca": true})
+                );
+            }
             for tab in 0..TABS.len() {
                 app.tab = tab;
                 let output = ctx.run(
