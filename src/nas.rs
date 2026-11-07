@@ -429,9 +429,15 @@ pub fn private_file(path: &Path) -> Result<File> {
     }
     Ok(options.open(path)?)
 }
+/// A box found on the network: ShareOS, or Alt-F (which can be switched to ShareOS).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub address: String,
+    pub altf: bool,
+}
 // Public identification only: discovery never sends credentials or trusts a
 // discovered certificate for subsequent login.
-pub fn discover(prefix: &str, configured: &str) -> Result<Vec<String>> {
+pub fn discover(prefix: &str, configured: &str) -> Result<Vec<Found>> {
     let mut addresses = discovery_addresses(prefix, configured)?;
     if prefix.trim().is_empty() {
         for host in local_search_hosts()? {
@@ -457,17 +463,27 @@ pub fn discover(prefix: &str, configured: &str) -> Result<Vec<String>> {
                 .map(|address| {
                     let http = &http;
                     scope.spawn(move || {
-                        probe(http, address)
-                            .ok()
-                            .filter(|found| *found)
-                            .map(|_| address.clone())
+                        if probe(http, address).unwrap_or(false) {
+                            return Some(Found {
+                                address: address.clone(),
+                                altf: false,
+                            });
+                        }
+                        // Alt-F only answers on plain HTTP
+                        let base = base_url(address).ok().filter(|b| b.scheme() == "http")?;
+                        crate::altf::detect(http, &base)
+                            .unwrap_or(false)
+                            .then(|| Found {
+                                address: address.clone(),
+                                altf: true,
+                            })
                     })
                 })
                 .collect();
             for job in jobs {
-                if let Ok(Some(address)) = job.join() {
-                    if !found.contains(&address) {
-                        found.push(address);
+                if let Ok(Some(box_found)) = job.join() {
+                    if !found.contains(&box_found) {
+                        found.push(box_found);
                     }
                 }
             }

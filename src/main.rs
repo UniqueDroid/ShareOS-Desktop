@@ -1,4 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod altf;
 mod backup;
 mod browser;
 mod drives;
@@ -7,11 +8,12 @@ mod file_ops;
 mod linux_window;
 mod nas;
 mod preferences;
+mod setup;
 mod terminal;
 mod theme;
 mod tls;
 mod transfer;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use eframe::egui;
 use nas::{Entry, Nas, Root};
 use serde_json::Value;
@@ -23,16 +25,26 @@ use std::{
     },
 };
 
-const TABS: [&str; 6] = [
-    "Box finden",
+const TABS: [&str; 7] = [
+    "Verbinden",
     "Dateien",
     "Netzlaufwerke",
     "Dateibackup",
     "Box-Einstellungen",
     "Terminal",
+    "Box einrichten",
 ];
+const SETUP_TAB: usize = 6;
+const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(600);
+/// Logged out: "Verbinden" and "Box einrichten". Logged in: the user's tabs;
+/// box settings, terminal and the setup wizard only for administrators.
 fn tab_visible(index: usize, logged_in: bool, admin: bool) -> bool {
-    index == 0 || (logged_in && (index != 5 || admin))
+    match index {
+        0 => true,
+        1..=3 => logged_in,
+        SETUP_TAB => !logged_in || admin,
+        _ => logged_in && admin,
+    }
 }
 enum FileAction {
     Copy(Vec<String>),
@@ -51,8 +63,10 @@ struct PendingFileDialog {
 }
 enum Change {
     Message(String),
-    Found(Vec<String>),
+    Found(Vec<nas::Found>),
     Certificate(tls::Certificate),
+    /// login refused an unknown certificate: show it for confirmation
+    Untrusted(tls::Certificate, String),
     Login(Nas, Vec<Root>),
     List(Vec<Entry>, bool),
     Snapshot(backup::Snapshot),
@@ -76,13 +90,15 @@ struct App {
     password: String,
     certificate: Option<tls::Certificate>,
     trusted_certificate: Option<tls::Certificate>,
+    /// certificate trust saved on this computer: survives logout and user changes
+    saved_certificate: Option<tls::Certificate>,
     nas: Option<Nas>,
     roots: Vec<Root>,
     selected: Vec<bool>,
     root: String,
     path: String,
     entries: Vec<Entry>,
-    found: Vec<String>,
+    found: Vec<nas::Found>,
     local: String,
     file_filter: String,
     file_selection: std::collections::BTreeSet<String>,
@@ -119,6 +135,11 @@ struct App {
     remember_address: bool,
     remember_certificate: bool,
     terminal: Option<terminal::Session>,
+    setup: setup::Setup,
+    /// last keep-alive call of the box session
+    keep_alive: std::time::Instant,
+    /// log in right after the certificate was confirmed
+    login_after_trust: bool,
 }
 impl App {
     fn new(ctx: &egui::Context) -> Self {
@@ -147,6 +168,10 @@ impl App {
             ),
         };
         let remember_address = saved.address.is_some();
+        let remembered_address = saved
+            .address
+            .clone()
+            .unwrap_or_else(|| "http://192.168.0.32".into());
         let remember_certificate = saved.certificate.is_some();
         Self {
             tab: 0,
@@ -157,7 +182,8 @@ impl App {
             user: String::new(),
             password: String::new(),
             certificate: None,
-            trusted_certificate: saved.certificate,
+            trusted_certificate: saved.certificate.clone(),
+            saved_certificate: saved.certificate,
             nas: None,
             roots: vec![],
             selected: vec![],
@@ -202,7 +228,59 @@ impl App {
             remember_address,
             remember_certificate,
             terminal: None,
+            setup: setup::Setup::new(&remembered_address),
+            keep_alive: std::time::Instant::now(),
+            login_after_trust: false,
         }
+    }
+    /// Trust follows the address: drop it for another address and fall back
+    /// to the certificate saved for this one (also after a logout).
+    fn sync_trust(&mut self) {
+        let origin = nas::base_url(&self.address)
+            .ok()
+            .map(|url| url.origin().ascii_serialization());
+        if self
+            .trusted_certificate
+            .as_ref()
+            .is_some_and(|cert| Some(&cert.origin) != origin.as_ref())
+        {
+            self.trusted_certificate = None;
+        }
+        if self.trusted_certificate.is_none() {
+            self.trusted_certificate = self
+                .saved_certificate
+                .clone()
+                .filter(|cert| Some(&cert.origin) == origin.as_ref());
+        }
+        if self
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| Some(&cert.origin) != origin.as_ref())
+        {
+            self.certificate = None;
+        }
+    }
+    /// Write address and confirmed certificate as chosen; never credentials.
+    fn save_connection(&mut self) -> Result<()> {
+        let path =
+            preferences::Preferences::location().context("Benutzer-Konfigurationsordner fehlt")?;
+        let address = if self.remember_address {
+            Some(nas::base_url(&self.address)?.to_string())
+        } else {
+            None
+        };
+        let certificate = if self.remember_certificate {
+            self.trusted_certificate.clone()
+        } else {
+            None
+        };
+        preferences::Preferences {
+            address,
+            certificate: certificate.clone(),
+        }
+        .save(&path)?;
+        self.saved_certificate = certificate;
+        Ok(())
     }
     fn start(
         &mut self,
@@ -277,6 +355,12 @@ impl App {
                                 };
                                 self.found = found;
                             }
+                            Change::Untrusted(certificate, password) => {
+                                self.certificate = Some(certificate);
+                                // keep the typed password: trust, then log in again
+                                self.password = password;
+                                self.status = "Die Box verwendet ein eigenes Zertifikat. Fingerabdruck mit der Box vergleichen, vertrauen und erneut anmelden.".into();
+                            }
                             Change::Certificate(certificate) => {
                                 self.certificate = Some(certificate);
                                 self.status = "Zertifikat geladen. Fingerabdruck vor dem Vertrauen mit der Box vergleichen.".into();
@@ -286,6 +370,7 @@ impl App {
                                 self.root =
                                     roots.first().map(|x| x.name.clone()).unwrap_or_default();
                                 self.nas = Some(nas);
+                                self.keep_alive = std::time::Instant::now();
                                 self.roots = roots;
                                 self.path.clear();
                                 self.entries.clear();
@@ -358,7 +443,7 @@ impl App {
                                 self.file_dialog = None;
                                 self.terminal = None;
                                 self.nas = None;
-                                self.trusted_certificate = None;
+                                self.trusted_certificate = self.saved_certificate.clone();
                                 self.certificate = None;
                                 self.roots.clear();
                                 self.entries.clear();
@@ -377,7 +462,27 @@ impl App {
         }
     }
     fn discovery(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.label("Box im lokalen Netzwerk suchen");
+        // with a saved address the search stays folded, so the login is
+        // visible right away
+        let mut setup_address = None;
+        egui::CollapsingHeader::new("Box im lokalen Netzwerk suchen")
+            .default_open(!self.remember_address)
+            .show(ui, |ui| self.search(ui, ctx, &mut setup_address));
+        if let Some(address) = setup_address {
+            if !self.setup.busy() {
+                self.setup = setup::Setup::detected(&address);
+            }
+            self.tab = SETUP_TAB;
+        }
+        ui.separator();
+        self.connect(ui, ctx);
+    }
+    fn search(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        setup_address: &mut Option<String>,
+    ) {
         ui.small("Ohne Eingabe wird automatisch das IPv4-Netz dieses Rechners durchsucht.");
         ui.collapsing("Erweiterte Suche",|ui| {
             field(ui,"Subnetz manuell (optional)",&mut self.subnet);
@@ -390,34 +495,44 @@ impl App {
                 Ok(Change::Found(nas::discover(&subnet, &configured)?))
             });
         }
-        for address in &self.found {
-            if ui
-                .selectable_label(self.address == *address, address)
-                .clicked()
-            {
-                self.address = address.clone();
-            }
+        for found in &self.found {
+            ui.horizontal(|ui| {
+                let label = if found.altf {
+                    format!("{} · Alt-F", found.address)
+                } else {
+                    found.address.clone()
+                };
+                if ui
+                    .selectable_label(self.address == found.address, label)
+                    .clicked()
+                {
+                    if found.altf {
+                        *setup_address = Some(found.address.clone());
+                    } else {
+                        self.address = found.address.clone();
+                    }
+                }
+                let (text, hint) = if found.altf {
+                    (
+                        "auf ShareOS umstellen",
+                        "Diese Box läuft mit Alt-F: mit dem Assistenten auf ShareOS umstellen",
+                    )
+                } else {
+                    (
+                        "einrichten",
+                        "Neue Box einrichten (Passwort, Name, Platten, erster Benutzer)",
+                    )
+                };
+                if ui.small_button(text).on_hover_text(hint).clicked() {
+                    *setup_address = Some(found.address.clone());
+                }
+            });
         }
-        ui.separator();
+    }
+    fn connect(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         field(ui, "Box-Adresse", &mut self.address);
         ui.small("HTTPS verwenden. Bei HTTP werden Zugangsdaten unverschlüsselt übertragen.");
-        let origin = nas::base_url(&self.address)
-            .ok()
-            .map(|url| url.origin().ascii_serialization());
-        if self
-            .trusted_certificate
-            .as_ref()
-            .is_some_and(|cert| Some(&cert.origin) != origin.as_ref())
-        {
-            self.trusted_certificate = None;
-        }
-        if self
-            .certificate
-            .as_ref()
-            .is_some_and(|cert| Some(&cert.origin) != origin.as_ref())
-        {
-            self.certificate = None;
-        }
+        self.sync_trust();
         if self.nas.is_none()
             && (self.address.trim().starts_with("https://") || !self.address.contains("://"))
         {
@@ -435,19 +550,48 @@ impl App {
                 ui.add(
                     egui::Label::new(egui::RichText::new(cert.fingerprint()).monospace()).wrap(),
                 );
-                ui.small("Mit dem Zertifikat im Browser oder auf der Box vergleichen. Vertrauen gilt nur für diese Adresse. Optional kann es unter „Verbindung merken“ gespeichert werden. Auch abweichende Zertifikatsnamen oder Gültigkeitszeiträume werden damit akzeptiert.");
-                if self.trusted_certificate.is_none()
-                    && ui
-                        .button("Diesem Zertifikat für diese Sitzung vertrauen")
-                        .clicked()
-                {
-                    self.trusted_certificate = Some(cert.clone());
+                ui.small("Mit dem Zertifikat im Browser (Schloss-Symbol) oder auf der Box vergleichen. Das Vertrauen gilt nur für diese Adresse und genau dieses Zertifikat – für alle Benutzer, auch nach dem Abmelden, wenn es gemerkt wird.");
+                if self.trusted_certificate.is_none() {
+                    let cert = cert.clone();
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .button("Vertrauen und auf diesem Rechner merken")
+                            .clicked()
+                        {
+                            self.trusted_certificate = Some(cert.clone());
+                            self.login_after_trust = !self.password.is_empty();
+                            self.remember_address = true;
+                            self.remember_certificate = true;
+                            self.status = match self.save_connection() {
+                                Ok(()) => {
+                                    "Zertifikat bestätigt und gespeichert. Jetzt anmelden.".into()
+                                }
+                                Err(error) => format!("Fehler: {error:#}"),
+                            };
+                        }
+                        if ui.button("Nur für diese Sitzung vertrauen").clicked() {
+                            self.trusted_certificate = Some(cert);
+                            self.login_after_trust = !self.password.is_empty();
+                        }
+                    });
                 }
             }
             if self.trusted_certificate.is_some() {
-                ui.label("Das bestätigte Zertifikat wird für diese Sitzung exakt geprüft.");
+                ui.label(if self.saved_certificate.is_some() {
+                    "Das gespeicherte Zertifikat wird bei jeder Anmeldung exakt geprüft."
+                } else {
+                    "Das bestätigte Zertifikat wird für diese Sitzung exakt geprüft."
+                });
                 if ui.button("Zertifikatsvertrauen zurücksetzen").clicked() {
                     self.trusted_certificate = None;
+                    if self.saved_certificate.is_some() {
+                        // also drop it from the saved connection, keep the address
+                        self.remember_certificate = false;
+                        self.status = match self.save_connection() {
+                            Ok(()) => "Gespeichertes Zertifikatsvertrauen entfernt.".into(),
+                            Err(error) => format!("Fehler: {error:#}"),
+                        };
+                    }
                 }
             }
         }
@@ -457,16 +601,11 @@ impl App {
             if self.remember_certificate {self.remember_address=true;}
             ui.small("Es werden weder Passwort noch Sitzungstoken gespeichert. Ein geändertes Zertifikat wird weiterhin abgewiesen.");
             if ui.button("Verbindungseinstellungen speichern").clicked() {
-                let result=(||->Result<()> {
-                    let path=preferences::Preferences::location().ok_or_else(||anyhow::anyhow!("Benutzer-Konfigurationsordner fehlt"))?;
-                    let address=if self.remember_address {Some(nas::base_url(&self.address)?.to_string())}else{None};
-                    let certificate=if self.remember_certificate {self.trusted_certificate.clone()}else{None};
-                    preferences::Preferences{address,certificate}.save(&path)
-                })();self.status=match result {Ok(())=>"Verbindungseinstellungen gespeichert.".into(),Err(error)=>format!("Fehler: {error}")};
+                let result=self.save_connection();self.status=match result {Ok(())=>"Verbindungseinstellungen gespeichert.".into(),Err(error)=>format!("Fehler: {error}")};
             }
             if ui.button("Gespeicherte Verbindung vergessen").clicked() {
                 let result=preferences::Preferences::location().map(|path|preferences::Preferences::default().save(&path));
-                match result {Some(Err(error))=>self.status=format!("Fehler: {error}"),_=>{self.remember_address=false;self.remember_certificate=false;self.trusted_certificate=None;self.status="Gespeicherte Verbindung gelöscht.".into();}}
+                match result {Some(Err(error))=>self.status=format!("Fehler: {error}"),_=>{self.remember_address=false;self.remember_certificate=false;self.trusted_certificate=None;self.saved_certificate=None;self.status="Gespeicherte Verbindung gelöscht.".into();}}
             }
         });
         if self.nas.is_some() {
@@ -474,17 +613,27 @@ impl App {
             return;
         }
         field(ui, "Benutzername", &mut self.user);
+        let mut enter = false;
         ui.horizontal(|ui| {
             ui.label("Passwort");
-            ui.add(text_input(&mut self.password).password(true));
+            let field = ui.add(text_input(&mut self.password).password(true));
+            enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         });
-        if self.nas.is_none() && ui.button("Anmelden").clicked() {
+        let again = std::mem::take(&mut self.login_after_trust);
+        if self.nas.is_none() && (ui.button("Anmelden").clicked() || enter || again) {
             let address = self.address.clone();
             let user = self.user.clone();
             let password = std::mem::take(&mut self.password);
             let trusted = self.trusted_certificate.clone();
             self.start(ctx, move || {
-                let nas = Nas::connect(&address, user, &password, trusted.as_ref())?;
+                let nas = match Nas::connect(&address, user, &password, trusted.as_ref()) {
+                    Ok(nas) => nas,
+                    // self-signed box certificate: show it for confirmation
+                    Err(error) if trusted.is_none() && tls::is_certificate_error(&error) => {
+                        return Ok(Change::Untrusted(tls::inspect(&address)?, password));
+                    }
+                    Err(error) => return Err(error),
+                };
                 let roots = match nas.roots() {
                     Ok(roots) => roots,
                     Err(error) => {
@@ -1353,6 +1502,18 @@ impl eframe::App for App {
 impl App {
     fn draw(&mut self, ctx: &egui::Context) {
         self.poll(ctx);
+        // The box ends a session after one idle hour. While the app is open
+        // and logged in, touch it every 10 minutes (in the background).
+        if let Some(nas) = &self.nas {
+            if self.keep_alive.elapsed() >= KEEP_ALIVE {
+                self.keep_alive = std::time::Instant::now();
+                let nas = nas.clone();
+                std::thread::spawn(move || {
+                    let _ = nas.refresh_shares();
+                });
+            }
+            ctx.request_repaint_after(KEEP_ALIVE);
+        }
         self.receive_file_drop(ctx);
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
@@ -1378,7 +1539,8 @@ impl App {
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(ctx, |ui| {
-                ui.set_max_width(1240.0);
+                // never wider than the window (set_max_width can also widen)
+                ui.set_max_width(ui.available_width().min(1240.0));
                 let actions_width = if self.nas.is_some() { 216.0 } else { 100.0 };
                 let brand_width =
                     (ui.available_width() - actions_width - ui.spacing().item_spacing.x).max(120.0);
@@ -1453,7 +1615,7 @@ impl App {
                                     self.file_dialog = None;
                                     self.terminal = None;
                                     self.nas = None;
-                                    self.trusted_certificate = None;
+                                    self.trusted_certificate = self.saved_certificate.clone();
                                     self.certificate = None;
                                     self.roots.clear();
                                     self.entries.clear();
@@ -1541,7 +1703,8 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(24, 12)),
             )
             .show(ctx, |ui| {
-                ui.set_max_width(1240.0);
+                // never wider than the window (set_max_width can also widen)
+                ui.set_max_width(ui.available_width().min(1240.0));
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Frame::new()
                         .fill(p.panel)
@@ -1549,7 +1712,7 @@ impl App {
                         .corner_radius(12)
                         .inner_margin(18)
                         .show(ui, |ui| {
-                            ui.set_min_width((ui.available_width() - 36.0).max(0.0));
+                            ui.set_min_width(ui.available_width());
                             ui.label(
                                 egui::RichText::new(TABS[self.tab].to_uppercase())
                                     .size(15.0)
@@ -1564,6 +1727,21 @@ impl App {
                                 2 => self.network(ui, ctx),
                                 3 => self.backups(ui, ctx),
                                 4 => self.settings(ui, ctx),
+                                SETUP_TAB => {
+                                    let trusted = self.trusted_certificate.clone();
+                                    if let setup::Outcome::Login(address, user, cert) =
+                                        self.setup.ui(ui, ctx, &p, trusted)
+                                    {
+                                        if cert.is_some() {
+                                            self.trusted_certificate = cert.clone();
+                                            self.certificate = cert;
+                                        }
+                                        self.address = address;
+                                        self.user = user;
+                                        self.tab = 0;
+                                        self.status = "Box eingerichtet. Jetzt mit dem neuen Benutzer anmelden.".into();
+                                    }
+                                }
                                 _ => self.terminal(ui, ctx),
                             });
                         });
@@ -1622,6 +1800,28 @@ mod ui_tests {
         assert!(app.status.contains("laufende Aufgabe"));
     }
     #[test]
+    fn saved_certificate_survives_logout_and_follows_the_address() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        let cert = tls::Certificate {
+            origin: "https://10.242.1.20".into(),
+            der: vec![1, 2, 3],
+        };
+        app.address = "https://10.242.1.20/".into();
+        app.saved_certificate = Some(cert.clone());
+        // logged out as root: trust is gone for the session …
+        app.trusted_certificate = None;
+        app.sync_trust();
+        // … and comes back from the saved connection for the next user
+        assert_eq!(app.trusted_certificate.as_ref().unwrap().der, cert.der);
+        app.address = "https://10.242.1.21/".into();
+        app.sync_trust();
+        assert!(app.trusted_certificate.is_none());
+        app.address = "https://10.242.1.20".into();
+        app.sync_trust();
+        assert!(app.trusted_certificate.is_some());
+    }
+    #[test]
     fn backup_source_follows_target_until_explicitly_overridden() {
         let ctx = egui::Context::default();
         let mut app = App::new(&ctx);
@@ -1653,9 +1853,11 @@ mod ui_tests {
                 .filter(|index| tab_visible(*index, logged_in, admin))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(visible(false, false), vec![0]);
-        assert_eq!(visible(true, false), vec![0, 1, 2, 3, 4]);
-        assert_eq!(visible(true, true), vec![0, 1, 2, 3, 4, 5]);
+        // the setup wizard works before a login (new boxes, Alt-F boxes)
+        assert_eq!(visible(false, false), vec![0, SETUP_TAB]);
+        // regular users only see their own tabs
+        assert_eq!(visible(true, false), vec![0, 1, 2, 3]);
+        assert_eq!(visible(true, true), vec![0, 1, 2, 3, 4, 5, SETUP_TAB]);
     }
     #[cfg(target_os = "linux")]
     #[test]

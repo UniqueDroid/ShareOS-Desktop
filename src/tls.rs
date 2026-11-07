@@ -25,6 +25,13 @@ impl Certificate {
             .join(":")
     }
 }
+/// The connection failed because the certificate is not trusted (self-signed,
+/// wrong name, expired) – not because of the network or the password.
+pub fn is_certificate_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|e| e.to_string().contains("invalid peer certificate"))
+}
 pub fn inspect(address: &str) -> Result<Certificate> {
     let base = crate::nas::base_url(address)?;
     ensure!(
@@ -273,9 +280,12 @@ mod integration_tests {
     fn self_signed_tls_requires_approval_and_rejects_a_different_pin() {
         let (address, server) = server(4);
         let base = crate::nas::base_url(&address).unwrap();
-        assert!(
-            crate::nas::Nas::connect(&address, "alice".into(), "must-not-be-sent", None).is_err()
-        );
+        let refused = crate::nas::Nas::connect(&address, "alice".into(), "must-not-be-sent", None)
+            .err()
+            .unwrap();
+        // the app recognises this and offers the certificate for confirmation
+        assert!(is_certificate_error(&refused));
+        assert!(!is_certificate_error(&anyhow::anyhow!("Access denied")));
         let cert = inspect(&address).unwrap();
         assert_eq!(cert.fingerprint().len(), 95);
         let client = configure(Client::builder().no_proxy(), &base, Some(&cert))
