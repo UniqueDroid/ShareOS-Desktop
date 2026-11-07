@@ -1,6 +1,6 @@
 # Install and test ShareOS Desktop
 
-Build ShareOS Desktop from Rust source or download a prebuilt package from Releases. There is no signed Windows installer yet. The app does not modify NAS firmware. Installation and updates require access to GitHub; subsequent NAS connections take place directly on your local network.
+Build ShareOS Desktop from Rust source or download a prebuilt package from Releases. There is no signed Windows installer yet. The app changes NAS firmware only when you explicitly switch an Alt-F box to ShareOS. Installation and updates require access to GitHub; subsequent NAS connections take place directly on your local network.
 
 ## Prebuilt packages
 

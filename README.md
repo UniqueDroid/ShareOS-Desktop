@@ -1,6 +1,6 @@
 # ShareOS Desktop
 
-An early Rust desktop application for Windows, Linux, and macOS, built with egui/eframe. This is a standalone project alongside [ShareOS](https://github.com/UniqueDroid/ShareOS); it does not modify the NAS firmware. Original logos and icons come from `ShareOS/src/shareos-core/www/` (GPLv2).
+An early Rust desktop application for Windows, Linux, and macOS, built with egui/eframe. This is a standalone project alongside [ShareOS](https://github.com/UniqueDroid/ShareOS); it only changes the NAS firmware when you explicitly switch an Alt-F box to ShareOS (see below). Original logos and icons come from `ShareOS/src/shareos-core/www/` (GPLv2).
 
 ## Downloads
 
