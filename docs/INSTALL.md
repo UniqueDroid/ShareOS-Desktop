@@ -111,7 +111,8 @@ The native executable is written to `target\release`. A native Windows CI build 
 - Upload and download a small test file.
 - In the Files section, drag a file from Explorer into the app. It should appear in your personal NAS home under `File Drop`. Dropping it again should produce a name such as `Name (2).txt`.
 - Connect a network drive using an unused drive letter. Windows uses its own SMB authentication; save credentials in Windows Credential Manager if needed.
-- As an administrator, check the embedded terminal and settings backup export.
+- As an administrator, check the embedded terminal. Under *Box-Einstellungen*, create a backup with and one without a password: both appear in the list with date and box; with a password, certificate and CA can be included.
+- Recovery (box with firmware 0.2.0-beta.21 or newer; this changes the box's settings): *Wiederherstellen …* on a backup, enter its password, *Sicherung prüfen*, tick *Verstanden*, *Wiederherstellen und neu starten*. After 1–2 minutes log in as `root` with the password from the backup: the app opens the recovery selection. Choose what should come back, *Übernehmen und neu starten*.
 - Box setup: on a freshly installed box, open "Box einrichten", enter the address and click "Box prüfen". Set a new administrator password, take over the existing data partition and create a regular user. Then log in with that user.
 - Alt-F switch (only when you really want to replace Alt-F; this flashes the box): in "Verbinden", open "Box im lokalen Netzwerk suchen", search, click "auf ShareOS umstellen" next to the Alt-F box, log in with the Alt-F password, choose the model and let the app load the firmware. Read the confirmation page (Alt-F's check result, firmware version, SHA-256) before ticking "Verstanden" and clicking "Jetzt umstellen". Do not switch the box off; the app waits up to 30 minutes until ShareOS answers and then continues with the box setup.
 

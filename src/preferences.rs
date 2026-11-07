@@ -9,6 +9,9 @@ use std::{
 pub struct Preferences {
     pub address: Option<String>,
     pub certificate: Option<crate::tls::Certificate>,
+    /// folder of the settings backups, when not the default one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backups: Option<String>,
 }
 impl Preferences {
     pub fn location() -> Option<PathBuf> {
@@ -84,6 +87,7 @@ mod tests {
                 origin: "https://box.local".into(),
                 der: vec![1, 2, 3],
             }),
+            backups: None,
         };
         value.save(&path).unwrap();
         let loaded = Preferences::load(&path).unwrap();

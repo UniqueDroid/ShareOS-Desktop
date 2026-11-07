@@ -370,9 +370,14 @@ impl Nas {
         }}))?;
         terminal_url(&self.base, &data)
     }
-    pub fn settings(&self, password: &str) -> Result<Value> {
+    /// certificate / ca: with their keys – the box allows it only encrypted
+    pub fn settings(&self, password: &str, certificate: bool, ca: bool) -> Result<Value> {
         ensure!(self.admin, "Administratorrechte erforderlich");
-        self.rpc("shareos.backup", "export", json!({"password":password}))
+        self.rpc(
+            "shareos.backup",
+            "export",
+            json!({"password":password,"certificate":certificate,"ca":ca}),
+        )
     }
     pub fn restore_settings(&self, content: &str, password: &str, apply: bool) -> Result<Value> {
         ensure!(self.admin, "Administratorrechte erforderlich");
@@ -699,7 +704,7 @@ mod integration_tests {
         ]);
         let nas = Nas::connect(&address, "alice".into(), "test-password", None).unwrap();
         assert!(!nas.admin);
-        assert!(nas.settings("").is_err());
+        assert!(nas.settings("", false, false).is_err());
         assert!(nas.terminal(false).is_err());
         let roots = nas.roots().unwrap();
         assert!(roots[0].home && roots[1].ro);
@@ -1094,7 +1099,7 @@ pub fn save_settings_file(content: &str, target: &Path) -> Result<()> {
     let value: Value =
         serde_json::from_str(content).context("Ungültige Sicherungsdaten von der Box")?;
     ensure!(
-        value["shareos_backup"] == 1,
+        value["shareos_backup"] == 1 || value["shareos_backup"] == 2,
         "Keine ShareOS-Einstellungssicherung erhalten"
     );
     let mut file = private_file(target)
