@@ -2,6 +2,10 @@
 
 Changes per release (newest first).
 
+## 0.2.3
+
+- **Claiming a new box** (ShareOS 0.3.0-beta.2 and newer): a new box has no known password. *Box einrichten* now asks to press the USB button on the front and to choose the password for `root` within 2 minutes, then continues with the setup. Also right after switching from Alt-F. Older firmware: login with `shareos` as before.
+
 ## 0.2.2
 
 - **Switch from Alt-F:** *Box einrichten* refused every Alt-F box with "Alt-F ist noch nicht eingerichtet (kein Passwort gesetzt)". The check looked for `passwd_again` anywhere on the login page, but Alt-F's login script names it on every page; now only the form field of the first-time password counts. Tests use Alt-F's real login page.

@@ -103,14 +103,11 @@ impl Nas {
         nas.base = base;
         nas
     }
-    pub fn connect(
-        address: &str,
-        user: String,
-        password: &str,
-        trusted: Option<&crate::tls::Certificate>,
-    ) -> Result<Self> {
+    /// Not logged in: only the public calls of the box (login page,
+    /// claiming a new box).
+    pub fn anonymous(address: &str, trusted: Option<&crate::tls::Certificate>) -> Result<Self> {
         let base = base_url(address)?;
-        let mut nas = Self {
+        Ok(Self {
             base: base.clone(),
             http: crate::tls::configure(
                 Http::builder()
@@ -122,11 +119,40 @@ impl Nas {
             )?
             .build()?,
             sid: ZERO.into(),
-            user,
+            user: String::new(),
             admin: false,
             shares: vec![],
             trusted: trusted.cloned(),
-        };
+        })
+    }
+
+    /// A new box (firmware 0.3.0-beta.2 and newer) keeps root locked until
+    /// it is claimed: USB button on the box, then the first password.
+    /// None: firmware without claiming, or the box is claimed.
+    pub fn claim_state(&self) -> Result<Option<Value>> {
+        match self.rpc("shareos.setup", "claim_state", json!({})) {
+            Ok(st) if st["unclaimed"].as_bool() == Some(true) => Ok(Some(st)),
+            Ok(_) => Ok(None),
+            Err(e) if crate::tls::is_certificate_error(&e) => Err(e),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// The first password of a new box (within 2 minutes after the USB button).
+    pub fn claim(&self, password: &str) -> Result<()> {
+        self.rpc("shareos.setup", "claim", json!({ "password": password }))
+            .map(|_| ())
+            .map_err(|e| anyhow!(claim_error(&e.to_string())))
+    }
+
+    pub fn connect(
+        address: &str,
+        user: String,
+        password: &str,
+        trusted: Option<&crate::tls::Certificate>,
+    ) -> Result<Self> {
+        let mut nas = Self::anonymous(address, trusted)?;
+        nas.user = user;
         let result = nas.rpc(
             "session",
             "login",
@@ -400,6 +426,21 @@ fn export_args(password: &str, certificate: bool, ca: bool) -> Value {
     }
     args
 }
+/// German text for the answers of shareos.setup claim.
+fn claim_error(e: &str) -> String {
+    if e.contains("press the USB button") {
+        "Zuerst die USB-Taste vorne an der Box kurz drücken – danach bleiben 2 Minuten für das Passwort.".into()
+    } else if e.contains("too short") {
+        "Das Passwort braucht mindestens 8 Zeichen.".into()
+    } else if e.contains("choose your own") {
+        "Bitte ein eigenes Passwort wählen, nicht „shareos“.".into()
+    } else if e.contains("already claimed") {
+        "Die Box hat schon ein Passwort – bitte damit anmelden.".into()
+    } else {
+        e.to_string()
+    }
+}
+
 fn terminal_url(base: &Url, data: &Value) -> Result<Url> {
     let port = data["port"]
         .as_u64()
@@ -704,6 +745,29 @@ mod integration_tests {
     }
     fn reply(value: Value) -> Value {
         json!({"jsonrpc":"2.0","id":1,"result":[0,value]})
+    }
+    #[test]
+    fn new_box_is_claimed_without_login() {
+        let (address, server) = mock(vec![
+            reply(json!({"unclaimed":true,"window":false,"seconds":120})),
+            reply(json!({"error":"press the USB button first"})),
+            reply(json!({"ok":true})),
+            // older firmware: the method is not there (access denied)
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Access denied"}}),
+            reply(json!({"unclaimed":false,"window":false,"seconds":120})),
+        ]);
+        let nas = Nas::anonymous(&address, None).unwrap();
+        assert!(nas.claim_state().unwrap().is_some());
+        let e = nas.claim("geheim123").unwrap_err().to_string();
+        assert!(e.contains("USB-Taste"), "{e}");
+        nas.claim("geheim123").unwrap();
+        assert!(nas.claim_state().unwrap().is_none());
+        assert!(nas.claim_state().unwrap().is_none());
+        let calls = server.join().unwrap();
+        assert!(calls.iter().all(|c| c["params"][0] == ZERO));
+        assert_eq!(calls[1]["params"][1], "shareos.setup");
+        assert_eq!(calls[1]["params"][2], "claim");
+        assert_eq!(calls[1]["params"][3]["password"], "geheim123");
     }
     #[test]
     fn user_session_is_bound_and_cannot_export_admin_settings() {
