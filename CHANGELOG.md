@@ -2,6 +2,11 @@
 
 Changes per release (newest first).
 
+## 0.2.1
+
+- **Settings backups with ShareOS 0.2.0-beta.20 and older:** *Jetzt sichern* wrote no file – the app always sent the new certificate/CA options, which older firmware refuses (`RPC verweigert (Code 2)`). They are now sent only when ticked (only offered by beta.21 and newer).
+- Messages after *Jetzt sichern* (saved or error) stay visible; the backup list reloaded right after and replaced them.
+
 ## 0.2.0
 
 - **Box setup wizard** (tab *Box einrichten*), like the vendor's setup tool: new administrator password (required while the factory password `shareos` is set), box name, time zone, update channel, optional Alt-F import; existing data partitions are taken over unchanged, new disks are formatted (single or mirror) only after typing `LÖSCHEN`; a first regular user with a share; then the login.

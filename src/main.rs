@@ -82,8 +82,9 @@ enum Change {
     Reload(String),
     FileDrop(file_drop::Report),
     Shares(Vec<nas::Share>),
-    /// settings backups in the folder, and what the box could add to one
-    Backups(Vec<settings_backups::BackupFile>, Option<Value>),
+    /// settings backups in the folder, what the box could add to one and the
+    /// message shown before the reload (it stays)
+    Backups(Vec<settings_backups::BackupFile>, Option<Value>, String),
     /// restore applied or recovery finished: the box restarts
     Restarting(String),
 }
@@ -417,8 +418,9 @@ impl App {
                                     self.status = "Die Box ist im Recovery-Modus: auswählen, was aus der Sicherung zurückkommen soll.".into();
                                 }
                             }
-                            Change::Backups(list, offer) => {
+                            Change::Backups(list, offer, status) => {
                                 self.settings_list = list;
+                                self.status = status;
                                 if offer.is_some() {
                                     self.settings_offer = offer;
                                 }
@@ -1448,6 +1450,9 @@ impl App {
     fn load_backups(&mut self, ctx: &egui::Context, nas: Option<Nas>) {
         let dir = PathBuf::from(&self.settings_dir);
         self.settings_loaded = true;
+        // a background reload: the last message (e.g. a backup error) stays
+        let status = self.status.clone();
+        let shown = status.clone();
         self.start(ctx, move || {
             let list = settings_backups::scan(&dir)?;
             // older firmware has no "offer": no certificate/CA options then
@@ -1455,8 +1460,9 @@ impl App {
                 nas.rpc("shareos.backup", "offer", serde_json::json!({}))
                     .ok()
             });
-            Ok(Change::Backups(list, offer))
+            Ok(Change::Backups(list, offer, status))
         });
+        self.status = shown;
     }
     fn settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let Some(nas) = self.nas.clone().filter(|nas| nas.admin) else {

@@ -376,7 +376,7 @@ impl Nas {
         self.rpc(
             "shareos.backup",
             "export",
-            json!({"password":password,"certificate":certificate,"ca":ca}),
+            export_args(password, certificate, ca),
         )
     }
     pub fn restore_settings(&self, content: &str, password: &str, apply: bool) -> Result<Value> {
@@ -387,6 +387,18 @@ impl Nas {
             json!({"content":content,"password":password,"apply":apply}),
         )
     }
+}
+/// rpcd refuses arguments a method does not declare (code 2): firmware before
+/// 0.2.0-beta.21 knows only the password, so the options go along only when set.
+fn export_args(password: &str, certificate: bool, ca: bool) -> Value {
+    let mut args = json!({ "password": password });
+    if certificate {
+        args["certificate"] = json!(true);
+    }
+    if ca {
+        args["ca"] = json!(true);
+    }
+    args
 }
 fn terminal_url(base: &Url, data: &Value) -> Result<Url> {
     let port = data["port"]
@@ -760,6 +772,18 @@ mod integration_tests {
         assert_eq!(shares.len(), 2);
         assert_eq!(shares[0].name, "alice");
         assert_eq!(shares[1].access, "ro");
+    }
+    #[test]
+    fn backup_export_sends_options_only_when_set() {
+        assert_eq!(export_args("", false, false), json!({"password":""}));
+        assert_eq!(
+            export_args("geheim1", true, false),
+            json!({"password":"geheim1","certificate":true})
+        );
+        assert_eq!(
+            export_args("geheim1", true, true),
+            json!({"password":"geheim1","certificate":true,"ca":true})
+        );
     }
     #[test]
     fn settings_backup_is_written_and_existing_files_are_preserved() {
