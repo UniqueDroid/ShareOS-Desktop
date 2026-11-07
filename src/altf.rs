@@ -80,7 +80,7 @@ impl AltF {
             .text()?;
         ensure!(is_altf_login(&page), "Das ist keine Alt-F-Anmeldeseite");
         ensure!(
-            !page.contains("passwd_again"),
+            !has_input(&page, "passwd_again"),
             "Alt-F ist noch nicht eingerichtet (kein Passwort gesetzt). Zuerst in Alt-F ein Passwort vergeben."
         );
         let salt = input_value(&page, "salt").context("Alt-F-Anmeldeseite ohne Salt")?;
@@ -214,18 +214,30 @@ fn checked(page: &str) -> Checked {
 }
 
 /// the value of `<input … name=NAME … value="…">` (Alt-F writes attributes in both styles)
-fn input_value(page: &str, name: &str) -> Option<String> {
+/// The <input> tag with this name (Alt-F writes name=x and name="x").
+fn input_tag<'a>(page: &'a str, name: &str) -> Option<&'a str> {
     page.split('<').find_map(|tag| {
         let tag = tag.split('>').next()?;
-        if !tag.starts_with("input")
-            || !(tag.contains(&format!("name={name} "))
-                || tag.contains(&format!("name=\"{name}\"")))
-        {
-            return None;
-        }
-        let v = tag.split("value=\"").nth(1)?.split('"').next()?;
-        Some(v.to_string())
+        (tag.starts_with("input")
+            && (tag.contains(&format!("name={name} "))
+                || tag.contains(&format!("name=\"{name}\""))))
+        .then_some(tag)
     })
+}
+
+/// Only the form field counts: the name also appears in the page's script
+/// (csubmit() looks for it on every login page).
+fn has_input(page: &str, name: &str) -> bool {
+    input_tag(page, name).is_some()
+}
+
+fn input_value(page: &str, name: &str) -> Option<String> {
+    let v = input_tag(page, name)?
+        .split("value=\"")
+        .nth(1)?
+        .split('"')
+        .next()?;
+    Some(v.to_string())
 }
 
 /// HTML without tags, scripts and repeated whitespace
@@ -521,7 +533,9 @@ mod tests {
     }
     #[test]
     fn logs_in_uploads_and_flashes_like_the_alt_f_forms() {
-        let login_page = r#"<title>Alt-F Login</title><form name="loginf" action="/cgi-bin/login_proc.cgi" method="post"><input type="password" name="passwd" id="passwd_id"><input type="hidden" name=from_url value=""><input type="hidden" id=salt_id name=salt value="s4lt"></form>"#;
+        // as Alt-F's login.cgi writes it with a password set: its script names
+        // passwd_again, the form has no such field
+        let login_page = r#"<title>Alt-F Login</title><script type="text/javascript">function csubmit() { if (document.getElementById('passwd_again')) return true; obj = document.getElementById('passwd_id'); obj.value = md5(obj.value + document.getElementById('salt_id').value); return true }</script><form name="loginf" action="/cgi-bin/login_proc.cgi" method="post"><input type="password" name="passwd" id="passwd_id"><input type="hidden" name=from_url value=""><input type="hidden" id=salt_id name=salt value="s4lt"></form>"#;
         let (base, server) = server(5, move |method, path, head, body| {
             match (method, path) {
             ("GET", "/cgi-bin/login.cgi") => html(login_page),
@@ -586,7 +600,7 @@ mod tests {
         );
         let (base2, server2) = server(1, |_, _, _, _| {
             html(
-                r#"Alt-F <form action="/cgi-bin/login_proc.cgi"><input type="password" name="passwd"><input type="password" name="passwd_again" id="passwd_again"></form>"#,
+                r#"Alt-F <script type="text/javascript">function csubmit() { if (document.getElementById('passwd_again')) return true; obj = document.getElementById('passwd_id'); obj.value = md5(obj.value + document.getElementById('salt_id').value); return true }</script><form action="/cgi-bin/login_proc.cgi"><input type="password" name="passwd" id="passwd_id"><input type="password" name="passwd_again" id="passwd_again"></form>"#,
             )
         });
         assert!(AltF::login(&base2, "x")

@@ -2,6 +2,10 @@
 
 Changes per release (newest first).
 
+## 0.2.2
+
+- **Switch from Alt-F:** *Box einrichten* refused every Alt-F box with "Alt-F ist noch nicht eingerichtet (kein Passwort gesetzt)". The check looked for `passwd_again` anywhere on the login page, but Alt-F's login script names it on every page; now only the form field of the first-time password counts. Tests use Alt-F's real login page.
+
 ## 0.2.1
 
 - **Settings backups with ShareOS 0.2.0-beta.20 and older:** *Jetzt sichern* wrote no file – the app always sent the new certificate/CA options, which older firmware refuses (`RPC verweigert (Code 2)`). They are now sent only when ticked (only offered by beta.21 and newer).
