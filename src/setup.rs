@@ -36,6 +36,8 @@ enum Stage {
     AltFlashing,
     /// HTTPS with an unknown (self-signed) certificate: confirm it first
     Certificate,
+    /// a new box keeps root locked: USB button, then the first password
+    Claim,
 }
 
 /// Results of the background jobs; a job can send several (progress lines).
@@ -44,6 +46,8 @@ enum Step {
     ShareOs,
     AltF,
     Unknown,
+    /// the box waits to be claimed (root locked)
+    Claim,
     LoggedIn(Box<Nas>, Value, Vec<String>, Value),
     /// the box certificate is not trusted yet
     Untrusted(tls::Certificate),
@@ -117,6 +121,8 @@ pub struct Setup {
     started: Option<Instant>,
     /// still the factory password: a new one is required
     default_password: bool,
+    claim_password: String,
+    claim_repeat: String,
     /// update channel chosen for the switch from Alt-F
     keep_beta: Option<bool>,
     /// check the box as soon as the tab is shown (opened from the search)
@@ -165,6 +171,8 @@ impl Setup {
             understood: false,
             started: None,
             default_password: false,
+            claim_password: String::new(),
+            claim_repeat: String::new(),
             keep_beta: None,
             auto_detect: false,
             trusted: None,
@@ -230,6 +238,11 @@ impl Setup {
                 self.error = "Unter dieser Adresse antwortet weder ShareOS noch Alt-F. Adresse prüfen (bei Alt-F http:// verwenden).".into()
             }
             Step::ShareOs => self.stage = Stage::ShareOsPassword,
+            Step::Claim => {
+                self.claim_password.clear();
+                self.claim_repeat.clear();
+                self.stage = Stage::Claim;
+            }
             Step::AltF => self.stage = Stage::AltLogin,
             Step::Untrusted(cert) => {
                 self.certificate = Some(cert);
@@ -320,14 +333,14 @@ impl Setup {
                 self.stage = Stage::AltConfirm;
             }
             Step::Switched => {
-                self.log.push("ShareOS läuft. Weiter mit der Einrichtung (Passwort „shareos“).".into());
+                self.log.push("ShareOS läuft. Weiter mit der Einrichtung.".into());
                 self.alt = None;
                 self.firmware = None;
                 self.checked = None;
-                self.root_password = "shareos".into();
                 self.keep_beta = Some(self.beta);
-                self.stage = Stage::ShareOsPassword;
-                self.login(ctx);
+                self.stage = Stage::Start;
+                // new firmware: claim with the USB button; older: password "shareos"
+                self.detect(ctx);
             }
         }
     }
@@ -355,7 +368,16 @@ impl Setup {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?;
             if crate::nas::probe(&http, base.as_str()).unwrap_or(false) {
-                // a new box still has the password "shareos": try it first
+                // a new box (0.3.0-beta.2+) keeps root locked until it is claimed
+                match Nas::anonymous(&address, trusted.as_ref())?.claim_state() {
+                    Ok(Some(_)) => return Ok(Step::Claim),
+                    Ok(None) => {}
+                    Err(e) if trusted.is_none() && tls::is_certificate_error(&e) => {
+                        return Ok(Step::Untrusted(tls::inspect(&address)?))
+                    }
+                    Err(e) => return Err(e),
+                }
+                // older firmware: a new box still has the password "shareos"
                 return match Nas::connect(&address, "root".into(), "shareos", trusted.as_ref()) {
                     Ok(nas) => Ok(Step::Default(Box::new(logged_in(nas)?))),
                     Err(e) if trusted.is_none() && tls::is_certificate_error(&e) => {
@@ -368,6 +390,23 @@ impl Setup {
                 return Ok(Step::AltF);
             }
             Ok(Step::Unknown)
+        });
+    }
+    /// first password of a new box, then log in with it
+    fn claim(&mut self, ctx: &egui::Context) {
+        let address = self.address.clone();
+        let trusted = self.trust();
+        let password = self.claim_password.clone();
+        self.root_password = password.clone();
+        self.default_password = false;
+        self.run(ctx, move |_| {
+            Nas::anonymous(&address, trusted.as_ref())?.claim(&password)?;
+            logged_in(Nas::connect(
+                &address,
+                "root".into(),
+                &password,
+                trusted.as_ref(),
+            )?)
         });
     }
     fn login(&mut self, ctx: &egui::Context) {
@@ -543,9 +582,29 @@ impl Setup {
         ui.add_space(6.0);
         ui.add_enabled_ui(!self.busy(), |ui| match self.stage {
             Stage::Start => {
-                small(ui, "Neue Boxen mit ShareOS melden sich mit dem Passwort „shareos“; Alt-F-Boxen über http://.");
+                small(ui, "Neue Boxen mit ShareOS übernimmt man mit der USB-Taste an der Box (ältere Versionen: Passwort „shareos“); Alt-F-Boxen über http://.");
                 if ui.button("Box prüfen").clicked() {
                     self.detect(ctx);
+                }
+            }
+            Stage::Claim => {
+                text(ui, "Neue Box: Sie hat noch kein Passwort und lässt sich erst übernehmen, wenn jemand direkt an der Box steht.");
+                text(ui, "1. Die USB-Taste vorne an der Box kurz drücken.");
+                text(ui, "2. Innerhalb von 2 Minuten hier das Passwort für den Administrator (root) wählen:");
+                ui.horizontal(|ui| {
+                    ui.label("Neues Passwort");
+                    ui.add(crate::text_input(&mut self.claim_password).password(true).desired_width(220.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Wiederholen");
+                    ui.add(crate::text_input(&mut self.claim_repeat).password(true).desired_width(220.0));
+                });
+                let ok = self.claim_password.chars().count() >= 8 && self.claim_password == self.claim_repeat;
+                if !self.claim_password.is_empty() && !ok {
+                    small(ui, if self.claim_password.chars().count() < 8 { "Mindestens 8 Zeichen." } else { "Die Passwörter sind nicht gleich." });
+                }
+                if ui.add_enabled(ok, egui::Button::new("Box übernehmen")).clicked() {
+                    self.claim(ctx);
                 }
             }
             Stage::ShareOsPassword => {
