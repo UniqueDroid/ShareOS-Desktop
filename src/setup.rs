@@ -36,7 +36,7 @@ enum Stage {
     AltFlashing,
     /// HTTPS with an unknown (self-signed) certificate: confirm it first
     Certificate,
-    /// a new box keeps root locked: USB button, then the first password
+    /// a new box keeps root locked: USB or reset button, then the first password
     Claim,
 }
 
@@ -339,7 +339,7 @@ impl Setup {
                 self.checked = None;
                 self.keep_beta = Some(self.beta);
                 self.stage = Stage::Start;
-                // new firmware: claim with the USB button; older: password "shareos"
+                // new firmware: claim with the USB or reset button; older: password "shareos"
                 self.detect(ctx);
             }
         }
@@ -582,14 +582,14 @@ impl Setup {
         ui.add_space(6.0);
         ui.add_enabled_ui(!self.busy(), |ui| match self.stage {
             Stage::Start => {
-                small(ui, "Neue Boxen mit ShareOS übernimmt man mit der USB-Taste an der Box (ältere Versionen: Passwort „shareos“); Alt-F-Boxen über http://.");
+                small(ui, "Neue Boxen mit ShareOS übernimmt man mit der USB-Taste an der Box oder einem kurzen Druck auf die Reset-Taste (ältere Versionen: Passwort „shareos“); Alt-F-Boxen über http://.");
                 if ui.button("Box prüfen").clicked() {
                     self.detect(ctx);
                 }
             }
             Stage::Claim => {
                 text(ui, "Neue Box: Sie hat noch kein Passwort und lässt sich erst übernehmen, wenn jemand direkt an der Box steht.");
-                text(ui, "1. Die USB-Taste vorne an der Box kurz drücken.");
+                text(ui, "1. Die USB-Taste vorne an der Box kurz drücken – oder die Reset-Taste kurz (unter 5 Sekunden, ab ShareOS 0.3.0-beta.16; für Boxen ohne USB-Taste wie den DNR-322L).");
                 text(ui, "2. Innerhalb von 2 Minuten hier das Passwort für den Administrator (root) wählen:");
                 ui.horizontal(|ui| {
                     ui.label("Neues Passwort");

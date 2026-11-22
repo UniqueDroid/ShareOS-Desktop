@@ -127,7 +127,7 @@ impl Nas {
     }
 
     /// A new box (firmware 0.3.0-beta.2 and newer) keeps root locked until
-    /// it is claimed: USB button on the box, then the first password.
+    /// it is claimed: USB or reset button on the box, then the first password.
     /// None: firmware without claiming, or the box is claimed.
     pub fn claim_state(&self) -> Result<Option<Value>> {
         match self.rpc("shareos.setup", "claim_state", json!({})) {
@@ -138,7 +138,7 @@ impl Nas {
         }
     }
 
-    /// The first password of a new box (within 2 minutes after the USB button).
+    /// The first password of a new box (within 2 minutes after the button).
     pub fn claim(&self, password: &str) -> Result<()> {
         self.rpc("shareos.setup", "claim", json!({ "password": password }))
             .map(|_| ())
@@ -428,8 +428,9 @@ fn export_args(password: &str, certificate: bool, ca: bool) -> Value {
 }
 /// German text for the answers of shareos.setup claim.
 fn claim_error(e: &str) -> String {
-    if e.contains("press the USB button") {
-        "Zuerst die USB-Taste vorne an der Box kurz drücken – danach bleiben 2 Minuten für das Passwort.".into()
+    // "press the USB button first" (up to 0.3.0-beta.15), "press the USB or reset button first"
+    if e.contains("press the USB") {
+        "Zuerst die USB-Taste vorne an der Box kurz drücken (oder kurz die Reset-Taste, unter 5 Sekunden) – danach bleiben 2 Minuten für das Passwort.".into()
     } else if e.contains("too short") {
         "Das Passwort braucht mindestens 8 Zeichen.".into()
     } else if e.contains("choose your own") {
@@ -747,6 +748,17 @@ mod integration_tests {
         json!({"jsonrpc":"2.0","id":1,"result":[0,value]})
     }
     #[test]
+    fn claim_error_knows_both_firmware_messages() {
+        // up to ShareOS 0.3.0-beta.15 and from beta.16 (reset button)
+        for e in [
+            "press the USB button first",
+            "press the USB or reset button first",
+        ] {
+            let t = claim_error(e);
+            assert!(t.contains("USB-Taste") && t.contains("Reset-Taste"), "{t}");
+        }
+    }
+    #[test]
     fn new_box_is_claimed_without_login() {
         let (address, server) = mock(vec![
             reply(json!({"unclaimed":true,"window":false,"seconds":120})),
@@ -759,7 +771,7 @@ mod integration_tests {
         let nas = Nas::anonymous(&address, None).unwrap();
         assert!(nas.claim_state().unwrap().is_some());
         let e = nas.claim("geheim123").unwrap_err().to_string();
-        assert!(e.contains("USB-Taste"), "{e}");
+        assert!(e.contains("USB-Taste") && e.contains("Reset-Taste"), "{e}");
         nas.claim("geheim123").unwrap();
         assert!(nas.claim_state().unwrap().is_none());
         assert!(nas.claim_state().unwrap().is_none());

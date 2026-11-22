@@ -2,6 +2,10 @@
 
 Changes per release (newest first).
 
+## 0.2.4
+
+- **Claiming with the reset button** (ShareOS 0.3.0-beta.16 and newer): boxes without a USB button, such as the DNR-322L rev A, are claimed with a short press (under 5 s) of the reset button. *Box einrichten* names both buttons, and the answer of newer firmware ("press the USB or reset button first") is shown in German again instead of the raw text.
+
 ## 0.2.3
 
 - **Claiming a new box** (ShareOS 0.3.0-beta.2 and newer): a new box has no known password. *Box einrichten* now asks to press the USB button on the front and to choose the password for `root` within 2 minutes, then continues with the setup. Also right after switching from Alt-F. Older firmware: login with `shareos` as before.
